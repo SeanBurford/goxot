@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -129,7 +130,16 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
-			if err != io.EOF {
+			if errors.Is(err, xot.ErrPacketTooLong) {
+				log.Printf("%s: %v", source, err)
+				pkt, _ := xot.ParseX25(data)
+				lci := uint16(0)
+				if pkt != nil {
+					lci = pkt.LCI
+				}
+				clr := xot.CreateClearRequest(lci, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				xot.SendXot(conn, clr.Serialize())
+			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
@@ -139,6 +149,13 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
+		}
+
+		if err := pkt.ValidateSize(); err != nil {
+			log.Printf("%s: %v", source, err)
+			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+			xot.SendXot(conn, clr.Serialize())
+			return
 		}
 
 		if pkt.GetBaseType() != xot.PktTypeCallRequest {
@@ -194,7 +211,16 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				for {
 					d, err := xot.ReadXot(destConn)
 					if err != nil {
-						if err != io.EOF {
+						if errors.Is(err, xot.ErrPacketTooLong) {
+							log.Printf("%s: %v from %s", source, err, destName)
+							pkt, _ := xot.ParseX25(d)
+							lci_err := uint16(0)
+							if pkt != nil {
+								lci_err = pkt.LCI
+							}
+							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+						} else if err != io.EOF {
 							log.Printf("%s: Error reading from %s: %v", source, destName, err)
 						}
 						select {
@@ -215,6 +241,12 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 					p, _ := xot.ParseX25(d)
 					if p != nil {
+						if err := p.ValidateSize(); err != nil {
+							log.Printf("%s: %v from %s", source, err, destName)
+							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+							return
+						}
 						if p.GetBaseType() == xot.PktTypeCallConnected {
 							log.Printf("%s: Call connected on LCI %d", source, lci)
 						} else if p.GetBaseType() == xot.PktTypeClearRequest {
@@ -231,7 +263,16 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				for {
 					d, err := xot.ReadXot(conn)
 					if err != nil {
-						if err != io.EOF {
+						if errors.Is(err, xot.ErrPacketTooLong) {
+							log.Printf("%s: %v from source", source, err)
+							pkt, _ := xot.ParseX25(d)
+							lci_err := uint16(0)
+							if pkt != nil {
+								lci_err = pkt.LCI
+							}
+							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+						} else if err != io.EOF {
 							log.Printf("%s: Error reading from source: %v", source, err)
 						}
 						select {
@@ -252,6 +293,12 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 					p, _ := xot.ParseX25(d)
 					if p != nil {
+						if err := p.ValidateSize(); err != nil {
+							log.Printf("%s: %v from source", source, err)
+							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+							return
+						}
 						if p.GetBaseType() == xot.PktTypeClearRequest {
 							log.Printf("%s: Call cleared on LCI %d", source, lci)
 						}

@@ -17,7 +17,7 @@ var (
 	}
 	bufferPool = sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 65536+4) // Max XOT packet size
+			return make([]byte, MaxXOTPacketSize)
 		},
 	}
 )
@@ -82,6 +82,11 @@ func ReadXot(conn net.Conn) ([]byte, error) {
 		}
 
 		length := binary.BigEndian.Uint16(buf[2:4])
+		if int(length) > MaxX25PacketSize {
+			data := make([]byte, n-4)
+			copy(data, buf[4:n])
+			return data, fmt.Errorf("%w: XOT packet too large: %d > %d", ErrPacketTooLong, length, MaxX25PacketSize)
+		}
 		if int(length) != n-4 {
 			return nil, fmt.Errorf("XOT length mismatch: header says %d, read %d", length, n-4)
 		}
@@ -105,6 +110,12 @@ func ReadXot(conn net.Conn) ([]byte, error) {
 	}
 
 	length := binary.BigEndian.Uint16(header[2:4])
+	if int(length) > MaxX25PacketSize {
+		// Read at least the first 3 bytes of the X.25 packet to try and get the LCI
+		data := make([]byte, 3)
+		io.ReadFull(conn, data)
+		return data, fmt.Errorf("%w: XOT packet too large: %d > %d", ErrPacketTooLong, length, MaxX25PacketSize)
+	}
 	data := make([]byte, length)
 	_, err = io.ReadFull(conn, data)
 	if err != nil {

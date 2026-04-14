@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ var (
 )
 
 const (
-	MaxTunPacketSize = 4096
+	MaxTunPacketSize = xot.MaxX25PacketSize + 5
 	ARPHRD_X25       = 271
 	TUNSETLINK       = 0x400454cd
 	TUNSETIFF        = 0x400454ca
@@ -345,7 +346,16 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
-			if err != io.EOF {
+			if errors.Is(err, xot.ErrPacketTooLong) {
+				log.Printf("%s: %v", source, err)
+				pkt, _ := xot.ParseX25(data)
+				lci_err := uint16(0)
+				if pkt != nil {
+					lci_err = pkt.LCI
+				}
+				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				xot.SendXot(conn, clr.Serialize())
+			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
@@ -355,6 +365,13 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
+		}
+
+		if err := pkt.ValidateSize(); err != nil {
+			log.Printf("%s: %v", source, err)
+			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+			xot.SendXot(conn, clr.Serialize())
+			return
 		}
 
 		if *trace {
@@ -397,6 +414,16 @@ func (tg *TunGateway) handleTunRead() {
 		if err != nil {
 			if *trace {
 				log.Printf("%s>??? UNKNOWN (hdr=0x%02X) % X", tunSource, hdr, payload)
+			}
+			continue
+		}
+
+		if err := pkt.ValidateSize(); err != nil {
+			log.Printf("%s: %v", tunSource, err)
+			// For TUN, we might want to send a Clear Request back to the kernel if it's a Call Request
+			if pkt.GetBaseType() == xot.PktTypeCallRequest {
+				clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
 			}
 			continue
 		}
@@ -491,7 +518,16 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
-			if err != io.EOF {
+			if errors.Is(err, xot.ErrPacketTooLong) {
+				log.Printf("%s: %v from gateway", source, err)
+				pkt, _ := xot.ParseX25(data)
+				lci_err := uint16(0)
+				if pkt != nil {
+					lci_err = pkt.LCI
+				}
+				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				xot.SendXot(conn, clr.Serialize())
+			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
@@ -510,6 +546,13 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
+		}
+
+		if err := pkt.ValidateSize(); err != nil {
+			log.Printf("%s: %v from gateway", source, err)
+			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+			xot.SendXot(conn, clr.Serialize())
+			return
 		}
 		
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())

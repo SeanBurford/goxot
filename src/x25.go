@@ -1,13 +1,34 @@
 package xot
 
 import (
+	"errors"
 	"fmt"
 	"log"
 )
 
+var ErrPacketTooLong = errors.New("X.25 packet too long")
+
 const (
 	GFIStandard = 0x01
 	LCIControl  = 0
+)
+
+const (
+	MaxUserData        = 4096
+	X25HeaderSize      = 11
+	XOTHeaderSize      = 4
+	MaxX25PacketSize   = MaxUserData + X25HeaderSize
+	MaxXOTPacketSize   = MaxX25PacketSize + XOTHeaderSize
+	MaxCallRequestSize = 260
+)
+
+const (
+	CauseOutofOrder          = 0x01
+	CauseLocalProcedureError = 0x42
+)
+
+const (
+	DiagPacketTooLong = 39
 )
 
 const (
@@ -26,10 +47,6 @@ const (
 	PktTypeDiagnostic       = 0xF1
 	PktTypeRegistrationReq  = 0xF3
 	PktTypeRegistrationConf = 0xF7
-)
-
-const (
-	CauseOutofOrder    = 0x01
 )
 
 type X25Packet struct {
@@ -116,6 +133,21 @@ func (p *X25Packet) TypeName() string {
 		return "REG_CONF"
 	}
 	return fmt.Sprintf("UNKNOWN(0x%02X)", p.Type)
+}
+
+func (p *X25Packet) ValidateSize() error {
+	if len(p.Payload) > MaxUserData {
+    return fmt.Errorf("%w: user data too large: %d > %d", ErrPacketTooLong, len(p.Payload), MaxUserData)
+  } else if p.Type == PktTypeCallRequest {
+		if len(p.Serialize()) > MaxCallRequestSize {
+			return fmt.Errorf("%w: call request too large: %d > %d", ErrPacketTooLong, len(p.Serialize()), MaxCallRequestSize)
+		}
+	} else {
+		if len(p.Serialize()) > MaxX25PacketSize {
+			return fmt.Errorf("%w: X.25 packet too large: %d > %d", ErrPacketTooLong, len(p.Serialize()), MaxX25PacketSize)
+		}
+	}
+	return nil
 }
 
 func LogTrace(source, dest string, pkt *X25Packet) {

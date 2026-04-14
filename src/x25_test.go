@@ -134,3 +134,35 @@ func TestGetBaseType(t *testing.T) {
 		t.Errorf("Expected RR, got 0x%02X", pkt.GetBaseType())
 	}
 }
+
+func TestValidateSize(t *testing.T) {
+	// Normal data packet
+	pkt := &X25Packet{
+		Type:    PktTypeData,
+		Payload: make([]byte, MaxUserData),
+	}
+	if err := pkt.ValidateSize(); err != nil {
+		t.Errorf("Valid data packet rejected: %v", err)
+	}
+
+	// Oversized data packet
+	pkt.Payload = make([]byte, MaxUserData+1)
+	if err := pkt.ValidateSize(); err == nil {
+		t.Errorf("Oversized data packet accepted")
+	}
+
+	// Normal call request
+	pkt = &X25Packet{
+		Type:    PktTypeCallRequest,
+		Payload: make([]byte, MaxCallRequestSize-3),
+	}
+	if err := pkt.ValidateSize(); err != nil {
+		t.Errorf("Valid call request rejected: %v", err)
+	}
+
+	// Oversized call request
+	pkt.Payload = make([]byte, MaxCallRequestSize-2)
+	if err := pkt.ValidateSize(); err == nil {
+		t.Errorf("Oversized call request accepted")
+	}
+}

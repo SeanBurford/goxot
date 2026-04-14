@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -125,7 +126,16 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
-			if err != io.EOF {
+			if errors.Is(err, xot.ErrPacketTooLong) {
+				log.Printf("%s: %v", source, err)
+				pkt, _ := xot.ParseX25(data)
+				lci_err := uint16(0)
+				if pkt != nil {
+					lci_err = pkt.LCI
+				}
+				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				xot.SendXot(conn, clr.Serialize())
+			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
@@ -135,6 +145,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
+		}
+
+		if err := pkt.ValidateSize(); err != nil {
+			log.Printf("%s: %v", source, err)
+			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+			xot.SendXot(conn, clr.Serialize())
+			return
 		}
 
 		if pkt.GetBaseType() != xot.PktTypeCallRequest {
@@ -209,7 +226,16 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				for {
 					d, err := xot.ReadXot(remoteConn)
 					if err != nil {
-						if err != io.EOF {
+						if errors.Is(err, xot.ErrPacketTooLong) {
+							log.Printf("%s: %v from remote", source, err)
+							pkt, _ := xot.ParseX25(d)
+							lci_err := uint16(0)
+							if pkt != nil {
+								lci_err = pkt.LCI
+							}
+							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+						} else if err != io.EOF {
 							log.Printf("%s: Error reading from remote: %v", source, err)
 						}
 						select {
@@ -230,6 +256,12 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 					p, _ := xot.ParseX25(d)
 					if p != nil {
+						if err := p.ValidateSize(); err != nil {
+							log.Printf("%s: %v from remote", source, err)
+							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+							return
+						}
 						if p.GetBaseType() == xot.PktTypeCallConnected {
 							log.Printf("%s: Call connected on LCI %d", source, lci)
 						} else if p.GetBaseType() == xot.PktTypeClearRequest {
@@ -246,7 +278,16 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				for {
 					d, err := xot.ReadXot(conn)
 					if err != nil {
-						if err != io.EOF {
+						if errors.Is(err, xot.ErrPacketTooLong) {
+							log.Printf("%s: %v from local", source, err)
+							pkt, _ := xot.ParseX25(d)
+							lci_err := uint16(0)
+							if pkt != nil {
+								lci_err = pkt.LCI
+							}
+							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+						} else if err != io.EOF {
 							log.Printf("%s: Error reading from local: %v", source, err)
 						}
 						select {
@@ -257,25 +298,28 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						return
 					}
 					p, _ := xot.ParseX25(d)
-					if p != nil && p.GetBaseType() == xot.PktTypeCallRequest {
-						c, _, _ := p.ParseCallRequest()
-						if c != called {
-							log.Printf("Rejecting subsequent call to different destination: %s", c)
-							continue
-						}
-					}
-					if *trace {
-						if p != nil {
-							xot.LogTrace(source, dest, p)
-						} else {
-							log.Printf("%s>%s UNKNOWN % X", source, dest, d)
-						}
-					}
-
 					if p != nil {
+						if err := p.ValidateSize(); err != nil {
+							log.Printf("%s: %v from local", source, err)
+							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							xot.SendXot(conn, clr.Serialize())
+							return
+						}
+						if p.GetBaseType() == xot.PktTypeCallRequest {
+							c, _, _ := p.ParseCallRequest()
+							if c != called {
+								log.Printf("Rejecting subsequent call to different destination: %s", c)
+								continue
+							}
+						}
+						if *trace {
+							xot.LogTrace(source, dest, p)
+						}
 						if p.GetBaseType() == xot.PktTypeClearRequest {
 							log.Printf("%s: Call cleared on LCI %d", source, lci)
 						}
+					} else if *trace {
+						log.Printf("%s>%s UNKNOWN % X", source, dest, d)
 					}
 
 					xot.SendXot(remoteConn, d)
