@@ -1,0 +1,5 @@
+{
+  "name": "GoXOT - X.25 over TCP Gateway",
+  "description": "A Linux command line application written in Go that implements RFC 1613 (X.25 over TCP) to bridge a TUN interface with XOT routers.",
+  "requestFramePermissions": []
+}
