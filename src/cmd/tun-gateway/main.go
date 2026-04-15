@@ -21,6 +21,7 @@ var (
 	tunName    = flag.String("tun", "tun0", "TUN interface name")
 	configPath = flag.String("config", "config.json", "Path to config file")
 	trace      = flag.Bool("trace", false, "Enable trace logging")
+	statsPort  = flag.Int("stats-port", 0, "Port for /varz stats (0 to disable)")
 )
 
 const (
@@ -266,6 +267,10 @@ func WriteTun(ifce *TunInterface, header byte, data []byte) error {
 func main() {
 	flag.Parse()
 	
+	if *statsPort > 0 {
+		xot.StartStatsServer(*statsPort)
+	}
+
 	// Load config
 	cm, err := xot.NewConfigManager(*configPath)
 	if err != nil {
@@ -305,7 +310,10 @@ func main() {
 	tg.SyncRoutes()
 	
 	// Watch config for changes
-	go tg.watchConfig()
+	go func() {
+		xot.ThreadStarts.Add("watch_config", 1)
+		tg.watchConfig()
+	}()
 
 	// Listen for xot-server
 	sockPath := "/tmp/xot_tun.sock"
@@ -317,12 +325,16 @@ func main() {
 	log.Printf("tun-gateway listening on %s", sockPath)
 	
 	// Handle TUN reads
-	go tg.handleTunRead()
+	go func() {
+		xot.ThreadStarts.Add("tun_read_handler", 1)
+		tg.handleTunRead()
+	}()
 	
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
+		xot.ThreadStarts.Add("signal_handler", 1)
 		<-sigChan
 		os.Remove(sockPath)
 		os.Exit(0)
@@ -333,7 +345,12 @@ func main() {
 		if err != nil {
 			continue
 		}
-		go tg.handleServerConn(conn)
+		xot.SessionsOpened.Add(1)
+		go func() {
+			xot.ThreadStarts.Add("server_conn_handler", 1)
+			tg.handleServerConn(conn)
+			xot.SessionsClosed.Add(1)
+		}()
 	}
 }
 
@@ -348,6 +365,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		if err != nil {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v", source, err)
+				xot.CausesGenerated.Add("packet_too_long", 1)
 				pkt, _ := xot.ParseX25(data)
 				lci_err := uint16(0)
 				if pkt != nil {
@@ -360,18 +378,25 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			}
 			return
 		}
+		xot.BytesReceived.Add("SVR", int64(len(data)))
 		
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
 		}
+		xot.PacketsHandled.Add(pkt.TypeName(), 1)
 
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v", source, err)
+			xot.CausesGenerated.Add("packet_too_long", 1)
 			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 			xot.SendXot(conn, clr.Serialize())
 			return
+		}
+
+		if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
+			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
 		}
 
 		if *trace {
@@ -385,6 +410,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		
 		// Always use TunHeaderData (0x00) for sending to TUN as per user feedback
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
+		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 	}
 }
 
@@ -396,6 +422,7 @@ func (tg *TunGateway) handleTunRead() {
 		if err != nil {
 			log.Fatalf("Error reading from TUN: %v", err)
 		}
+		xot.BytesReceived.Add("TUN", int64(len(payload)))
 
 		if len(payload) == 0 {
 			if *trace {
@@ -417,15 +444,21 @@ func (tg *TunGateway) handleTunRead() {
 			}
 			continue
 		}
+		xot.PacketsHandled.Add(pkt.TypeName(), 1)
 
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v", tunSource, err)
+			xot.CausesGenerated.Add("packet_too_long", 1)
 			// For TUN, we might want to send a Clear Request back to the kernel if it's a Call Request
 			if pkt.GetBaseType() == xot.PktTypeCallRequest {
 				clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 				WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
 			}
 			continue
+		}
+
+		if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
+			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
 		}
 
 		// Handle RESTART_REQ from kernel - usually means interface reset or peer reset
@@ -444,6 +477,7 @@ func (tg *TunGateway) handleTunRead() {
 
 		// Check for intercepted call
 		if pkt.GetBaseType() == xot.PktTypeCallRequest {
+			xot.CallsReceived.Add("TUN", 1)
 			called, calling, err := pkt.ParseCallRequest()
 			if err == nil && tg.cm.GetServer(called) != nil {
 				log.Printf("TUN: Intercepting CALL_REQ from %s to %s", calling, called)
@@ -471,6 +505,7 @@ func (tg *TunGateway) handleTunRead() {
 			}
 
 			xot.SendXot(info.conn, pkt.Serialize())
+			xot.BytesSent.Add("SVR", int64(len(pkt.Serialize())))
 		} else if *trace {
 			log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pkt.TypeName(), pkt.LCI)
 		}
@@ -500,6 +535,8 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	if *trace {
 		xot.LogTrace(fmt.Sprintf("TUN(%d)", tg.ifce.Fd()), fmt.Sprintf("GWY(%d)", xot.GetFd(conn)), pkt)
 	}
+	xot.CallsSent.Add("GWY", 1)
+	xot.BytesSent.Add("GWY", int64(len(pkt.Serialize())))
 	xot.SendXot(conn, pkt.Serialize())
 }
 
@@ -520,6 +557,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 		if err != nil {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v from gateway", source, err)
+				xot.CausesGenerated.Add("packet_too_long", 1)
 				pkt, _ := xot.ParseX25(data)
 				lci_err := uint16(0)
 				if pkt != nil {
@@ -532,6 +570,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			}
 			return
 		}
+		xot.BytesReceived.Add("GWY", int64(len(data)))
 		
 		if *trace {
 			pkt, err := xot.ParseX25(data)
@@ -547,15 +586,24 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
 		}
+		xot.PacketsHandled.Add(pkt.TypeName(), 1)
 
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v from gateway", source, err)
+			xot.CausesGenerated.Add("packet_too_long", 1)
 			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 			xot.SendXot(conn, clr.Serialize())
 			return
 		}
+
+		if pkt.GetBaseType() == xot.PktTypeCallConnected {
+			xot.CallsReceived.Add("GWY", 1)
+		} else if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
+			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
+		}
 		
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
+		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 	}
 }
 

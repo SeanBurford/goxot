@@ -51,6 +51,7 @@ func ResolveXotDestination(addr string, srv *XotServerConfig) ([]string, error) 
 	dnsCacheMu.Unlock()
 
 	log.Printf("DNS: Resolving %s (for X.121 %s)", dnsName, addr)
+	DnsRequests.Add(1)
 	ips, err := net.LookupHost(dnsName)
 	if err != nil {
 		return nil, fmt.Errorf("DNS lookup failed for %s: %v", dnsName, err)

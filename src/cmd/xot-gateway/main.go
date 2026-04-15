@@ -20,6 +20,7 @@ var (
 	configPath  = flag.String("config", "config.json", "Path to config file")
 	trace       = flag.Bool("trace", false, "Enable trace logging")
 	gracePeriod = flag.Int("graceperiod", 5, "Grace period in seconds for SIGHUP shutdown")
+	statsPort   = flag.Int("stats-port", 0, "Port for /varz stats (0 to disable)")
 
 	shuttingDown atomic.Bool
 	activeConns  sync.Map // net.Conn -> chan struct{} (stop channel)
@@ -28,6 +29,10 @@ var (
 
 func main() {
 	flag.Parse()
+
+	if *statsPort > 0 {
+		xot.StartStatsServer(*statsPort)
+	}
 
 	cm, err := xot.NewConfigManager(*configPath)
 	if err != nil {
@@ -105,12 +110,15 @@ func main() {
 			}
 			continue
 		}
+		xot.SessionsOpened.Add(1)
 		wg.Add(1)
 		stop := make(chan struct{})
 		activeConns.Store(conn, stop)
 		go func() {
+			xot.ThreadStarts.Add("gateway_conn_handler", 1)
 			handleGatewayConn(conn, cm, stop)
 			activeConns.Delete(conn)
+			xot.SessionsClosed.Add(1)
 			wg.Done()
 		}()
 	}
@@ -128,6 +136,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		if err != nil {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v", source, err)
+				xot.CausesGenerated.Add("packet_too_long", 1)
 				pkt, _ := xot.ParseX25(data)
 				lci_err := uint16(0)
 				if pkt != nil {
@@ -140,23 +149,31 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			}
 			return
 		}
+		xot.BytesReceived.Add("GWY", int64(len(data)))
 
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
 		}
+		xot.PacketsHandled.Add(pkt.TypeName(), 1)
 
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v", source, err)
+			xot.CausesGenerated.Add("packet_too_long", 1)
 			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 			xot.SendXot(conn, clr.Serialize())
 			return
 		}
 
+		if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
+			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
+		}
+
 		if pkt.GetBaseType() != xot.PktTypeCallRequest {
 			continue
 		}
+		xot.CallsReceived.Add("GWY", 1)
 
 		lci := pkt.LCI
 		called, calling, err := pkt.ParseCallRequest()
@@ -217,17 +234,21 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 			// Forward initial packet
 			xot.SendXot(remoteConn, data)
+			xot.CallsSent.Add("XOT", 1)
+			xot.BytesSent.Add("XOT", int64(len(data)))
 
 			// Bidirectional relay
 			relayQuit := make(chan struct{})
 			
 			// Relay from remote to local
 			go func() {
+				xot.ThreadStarts.Add("relay_remote_to_local", 1)
 				for {
 					d, err := xot.ReadXot(remoteConn)
 					if err != nil {
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from remote", source, err)
+							xot.CausesGenerated.Add("packet_too_long", 1)
 							pkt, _ := xot.ParseX25(d)
 							lci_err := uint16(0)
 							if pkt != nil {
@@ -245,6 +266,8 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						}
 						return
 					}
+					xot.BytesReceived.Add("XOT", int64(len(d)))
+
 					if *trace {
 						p, _ := xot.ParseX25(d)
 						if p != nil {
@@ -256,30 +279,39 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 					p, _ := xot.ParseX25(d)
 					if p != nil {
+						xot.PacketsHandled.Add(p.TypeName(), 1)
 						if err := p.ValidateSize(); err != nil {
 							log.Printf("%s: %v from remote", source, err)
+							xot.CausesGenerated.Add("packet_too_long", 1)
 							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot(conn, clr.Serialize())
 							return
 						}
 						if p.GetBaseType() == xot.PktTypeCallConnected {
 							log.Printf("%s: Call connected on LCI %d", source, lci)
+							xot.CallsReceived.Add("XOT", 1)
 						} else if p.GetBaseType() == xot.PktTypeClearRequest {
 							log.Printf("%s: Call cleared on LCI %d", source, lci)
+							if len(p.Payload) >= 1 {
+								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
+							}
 						}
 					}
 
 					xot.SendXot(conn, d)
+					xot.BytesSent.Add("GWY", int64(len(d)))
 				}
 			}()
 
 			// Relay from local to remote
 			go func() {
+				xot.ThreadStarts.Add("relay_local_to_remote", 1)
 				for {
 					d, err := xot.ReadXot(conn)
 					if err != nil {
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from local", source, err)
+							xot.CausesGenerated.Add("packet_too_long", 1)
 							pkt, _ := xot.ParseX25(d)
 							lci_err := uint16(0)
 							if pkt != nil {
@@ -297,10 +329,14 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						}
 						return
 					}
+					xot.BytesReceived.Add("GWY", int64(len(d)))
+
 					p, _ := xot.ParseX25(d)
 					if p != nil {
+						xot.PacketsHandled.Add(p.TypeName(), 1)
 						if err := p.ValidateSize(); err != nil {
 							log.Printf("%s: %v from local", source, err)
+							xot.CausesGenerated.Add("packet_too_long", 1)
 							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot(conn, clr.Serialize())
 							return
@@ -317,12 +353,16 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						}
 						if p.GetBaseType() == xot.PktTypeClearRequest {
 							log.Printf("%s: Call cleared on LCI %d", source, lci)
+							if len(p.Payload) >= 1 {
+								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
+							}
 						}
 					} else if *trace {
 						log.Printf("%s>%s UNKNOWN % X", source, dest, d)
 					}
 
 					xot.SendXot(remoteConn, d)
+					xot.BytesSent.Add("XOT", int64(len(d)))
 				}
 			}()
 
@@ -331,6 +371,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				// One side closed naturally
 			case <-stop:
 				// Shutdown triggered
+				xot.CausesGenerated.Add("0x01", 1)
 				clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
 				if *trace {
 					xot.LogTrace("SHUTDOWN", source, clr)
