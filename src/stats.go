@@ -12,6 +12,7 @@ var (
 
 	PacketsHandled = expvar.NewMap("packets_handled")
 	ThreadStarts   = expvar.NewMap("thread_starts")
+	ThreadsActive  = expvar.NewMap("threads_active")
 
 	CallsSent     = expvar.NewMap("calls_sent")
 	CallsReceived = expvar.NewMap("calls_received")

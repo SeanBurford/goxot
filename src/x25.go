@@ -24,6 +24,7 @@ const (
 
 const (
 	CauseOutofOrder          = 0x01
+	CauseNetworkCongestion   = 0x05
 	CauseLocalProcedureError = 0x42
 )
 
@@ -83,7 +84,7 @@ func (p *X25Packet) GetBaseType() byte {
 	}
 	// For S-frames (RR, RNR, REJ), the type is in the lower 4 bits (excluding bit 0 which is 1)
 	// Actually, bits 3-1 define the type: 000 (RR), 010 (RNR), 100 (REJ)
-	if (p.Type & 0x0F) == 0x01 || (p.Type & 0x0F) == 0x05 || (p.Type & 0x0F) == 0x09 {
+	if (p.Type&0x0F) == 0x01 || (p.Type&0x0F) == 0x05 || (p.Type&0x0F) == 0x09 {
 		return p.Type & 0x0F
 	}
 	return p.Type
@@ -137,8 +138,8 @@ func (p *X25Packet) TypeName() string {
 
 func (p *X25Packet) ValidateSize() error {
 	if len(p.Payload) > MaxUserData {
-    return fmt.Errorf("%w: user data too large: %d > %d", ErrPacketTooLong, len(p.Payload), MaxUserData)
-  } else if p.Type == PktTypeCallRequest {
+		return fmt.Errorf("%w: user data too large: %d > %d", ErrPacketTooLong, len(p.Payload), MaxUserData)
+	} else if p.Type == PktTypeCallRequest {
 		if len(p.Serialize()) > MaxCallRequestSize {
 			return fmt.Errorf("%w: call request too large: %d > %d", ErrPacketTooLong, len(p.Serialize()), MaxCallRequestSize)
 		}
@@ -174,7 +175,7 @@ func (p *X25Packet) ParseCallRequest() (called, calling string, err error) {
 	}
 
 	addrData := p.Payload[offset : offset+totalAddrBytes]
-	
+
 	// Decode BCD addresses
 	decode := func(data []byte, length int, startNibble int) string {
 		res := ""

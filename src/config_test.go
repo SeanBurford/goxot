@@ -43,11 +43,11 @@ func TestConfigManager(t *testing.T) {
 		]
 	}`
 	os.WriteFile(filename, []byte(dnsContent), 0644)
-	
+
 	// Force mod time change for reload
 	now := time.Now().Add(time.Second)
 	os.Chtimes(filename, now, now)
-	
+
 	cm.Reload()
 
 	srv = cm.GetServer("45678")

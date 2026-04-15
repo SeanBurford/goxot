@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	xot "github.com/SeanBurford/goxot"
 	"io"
 	"log"
 	"net"
@@ -13,7 +14,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	xot "github.com/SeanBurford/goxot"
 )
 
 var (
@@ -56,6 +56,9 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
+		xot.ThreadStarts.Add("shutdown_handler", 1)
+		xot.ThreadsActive.Add("shutdown_handler", 1)
+		defer xot.ThreadsActive.Add("shutdown_handler", -1)
 		sig := <-sigChan
 		log.Printf("Received signal %v, starting shutdown...", sig)
 		shuttingDown.Store(true)
@@ -63,7 +66,7 @@ func main() {
 
 		if sig == syscall.SIGHUP {
 			log.Printf("Graceful shutdown: waiting up to %d seconds...", *gracePeriod)
-			
+
 			// Wait for grace period or all connections to finish
 			done := make(chan struct{})
 			go func() {
@@ -85,22 +88,22 @@ func main() {
 		activeConns.Range(func(key, value interface{}) bool {
 			conn := key.(net.Conn)
 			stop := value.(chan struct{})
-			
+
 			// Signal the relay loop to stop
 			select {
 			case <-stop:
 			default:
 				close(stop)
 			}
-			
-			// We don't know the LCI here easily without more tracking, 
+
+			// We don't know the LCI here easily without more tracking,
 			// but we can at least close the connection.
 			// Actually, we should try to send a Clear Request if we can.
 			// For now, just close the connection as handleIncomingXot will handle it.
 			conn.Close()
 			return true
 		})
-		
+
 		os.Exit(0)
 	}()
 
@@ -118,6 +121,8 @@ func main() {
 		activeConns.Store(conn, stop)
 		go func() {
 			xot.ThreadStarts.Add("incoming_xot_handler", 1)
+			xot.ThreadsActive.Add("incoming_xot_handler", 1)
+			defer xot.ThreadsActive.Add("incoming_xot_handler", -1)
 			handleIncomingXot(conn, cm, stop)
 			activeConns.Delete(conn)
 			xot.SessionsClosed.Add(1)
@@ -207,7 +212,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			xot.SendXot(conn, clr.Serialize())
 			return
 		}
-		
+
 		// Inner function to handle the relay so we can defer destConn.Close() properly
 		func() {
 			defer destConn.Close()
@@ -224,10 +229,15 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 			// Bidirectional relay
 			relayQuit := make(chan struct{})
-			
+			var relayWg sync.WaitGroup
+			relayWg.Add(2)
+
 			// Relay from destination to source
 			go func() {
 				xot.ThreadStarts.Add("relay_dest_to_source", 1)
+				xot.ThreadsActive.Add("relay_dest_to_source", 1)
+				defer xot.ThreadsActive.Add("relay_dest_to_source", -1)
+				defer relayWg.Done()
 				for {
 					d, err := xot.ReadXot(destConn)
 					if err != nil {
@@ -265,6 +275,10 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 					p, _ := xot.ParseX25(d)
 					if p != nil {
 						xot.PacketsHandled.Add(p.TypeName(), 1)
+						if p.LCI != lci {
+							log.Printf("%s: Mismatched LCI %d from %s (expected %d) - ignoring", source, p.LCI, destName, lci)
+							continue
+						}
 						if err := p.ValidateSize(); err != nil {
 							log.Printf("%s: %v from %s", source, err, destName)
 							xot.CausesGenerated.Add("packet_too_long", 1)
@@ -281,6 +295,9 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
 							}
 						}
+						if *trace {
+							xot.LogTrace(dest, source, p)
+						}
 					}
 
 					xot.SendXot(conn, d)
@@ -291,6 +308,9 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			// Relay from source to destination
 			go func() {
 				xot.ThreadStarts.Add("relay_source_to_dest", 1)
+				xot.ThreadsActive.Add("relay_source_to_dest", 1)
+				defer xot.ThreadsActive.Add("relay_source_to_dest", -1)
+				defer relayWg.Done()
 				for {
 					d, err := xot.ReadXot(conn)
 					if err != nil {
@@ -328,6 +348,10 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 					p, _ := xot.ParseX25(d)
 					if p != nil {
 						xot.PacketsHandled.Add(p.TypeName(), 1)
+						if p.LCI != lci {
+							log.Printf("%s: Mismatched LCI %d from source (expected %d) - ignoring", source, p.LCI, lci)
+							continue
+						}
 						if err := p.ValidateSize(); err != nil {
 							log.Printf("%s: %v from source", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
@@ -340,6 +364,9 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							if len(p.Payload) >= 1 {
 								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
 							}
+						}
+						if *trace {
+							xot.LogTrace(source, dest, p)
 						}
 					}
 
@@ -360,8 +387,13 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				}
 				xot.SendXot(conn, clr.Serialize())
 			}
+
+			// Ensure both goroutines exit by closing connections
+			destConn.Close()
+			conn.Close()
+			relayWg.Wait()
 		}()
-		
+
 		if shuttingDown.Load() {
 			return
 		}

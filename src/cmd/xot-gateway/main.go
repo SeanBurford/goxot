@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
 	xot "github.com/SeanBurford/goxot"
 )
 
@@ -57,6 +58,9 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
+		xot.ThreadStarts.Add("shutdown_handler", 1)
+		xot.ThreadsActive.Add("shutdown_handler", 1)
+		defer xot.ThreadsActive.Add("shutdown_handler", -1)
 		sig := <-sigChan
 		log.Printf("Received signal %v, starting shutdown...", sig)
 		shuttingDown.Store(true)
@@ -64,7 +68,7 @@ func main() {
 
 		if sig == syscall.SIGHUP {
 			log.Printf("Graceful shutdown: waiting up to %d seconds...", *gracePeriod)
-			
+
 			// Wait for grace period or all connections to finish
 			done := make(chan struct{})
 			go func() {
@@ -86,18 +90,18 @@ func main() {
 		activeConns.Range(func(key, value interface{}) bool {
 			conn := key.(net.Conn)
 			stop := value.(chan struct{})
-			
+
 			// Signal the relay loop to stop
 			select {
 			case <-stop:
 			default:
 				close(stop)
 			}
-			
+
 			conn.Close()
 			return true
 		})
-		
+
 		os.Remove(sockPath)
 		os.Exit(0)
 	}()
@@ -116,6 +120,8 @@ func main() {
 		activeConns.Store(conn, stop)
 		go func() {
 			xot.ThreadStarts.Add("gateway_conn_handler", 1)
+			xot.ThreadsActive.Add("gateway_conn_handler", 1)
+			defer xot.ThreadsActive.Add("gateway_conn_handler", -1)
 			handleGatewayConn(conn, cm, stop)
 			activeConns.Delete(conn)
 			xot.SessionsClosed.Add(1)
@@ -239,10 +245,15 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 			// Bidirectional relay
 			relayQuit := make(chan struct{})
-			
+			var relayWg sync.WaitGroup
+			relayWg.Add(2)
+
 			// Relay from remote to local
 			go func() {
 				xot.ThreadStarts.Add("relay_remote_to_local", 1)
+				xot.ThreadsActive.Add("relay_remote_to_local", 1)
+				defer xot.ThreadsActive.Add("relay_remote_to_local", -1)
+				defer relayWg.Done()
 				for {
 					d, err := xot.ReadXot(remoteConn)
 					if err != nil {
@@ -280,6 +291,10 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 					p, _ := xot.ParseX25(d)
 					if p != nil {
 						xot.PacketsHandled.Add(p.TypeName(), 1)
+						if p.LCI != lci {
+							log.Printf("%s: Mismatched LCI %d from remote (expected %d) - ignoring", source, p.LCI, lci)
+							continue
+						}
 						if err := p.ValidateSize(); err != nil {
 							log.Printf("%s: %v from remote", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
@@ -296,6 +311,9 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
 							}
 						}
+						if *trace {
+							xot.LogTrace(dest, source, p)
+						}
 					}
 
 					xot.SendXot(conn, d)
@@ -306,6 +324,9 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			// Relay from local to remote
 			go func() {
 				xot.ThreadStarts.Add("relay_local_to_remote", 1)
+				xot.ThreadsActive.Add("relay_local_to_remote", 1)
+				defer xot.ThreadsActive.Add("relay_local_to_remote", -1)
+				defer relayWg.Done()
 				for {
 					d, err := xot.ReadXot(conn)
 					if err != nil {
@@ -334,19 +355,16 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 					p, _ := xot.ParseX25(d)
 					if p != nil {
 						xot.PacketsHandled.Add(p.TypeName(), 1)
+						if p.LCI != lci {
+							log.Printf("%s: Mismatched LCI %d from local (expected %d) - ignoring", source, p.LCI, lci)
+							continue
+						}
 						if err := p.ValidateSize(); err != nil {
 							log.Printf("%s: %v from local", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
 							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot(conn, clr.Serialize())
 							return
-						}
-						if p.GetBaseType() == xot.PktTypeCallRequest {
-							c, _, _ := p.ParseCallRequest()
-							if c != called {
-								log.Printf("Rejecting subsequent call to different destination: %s", c)
-								continue
-							}
 						}
 						if *trace {
 							xot.LogTrace(source, dest, p)
@@ -378,8 +396,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				}
 				xot.SendXot(conn, clr.Serialize())
 			}
+
+			// Ensure both goroutines exit by closing connections
+			remoteConn.Close()
+			conn.Close()
+			relayWg.Wait()
 		}()
-		
+
 		if shuttingDown.Load() {
 			return
 		}

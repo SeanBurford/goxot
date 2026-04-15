@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+
 	xot "github.com/SeanBurford/goxot"
 )
 
@@ -25,20 +26,20 @@ var (
 )
 
 const (
-	MaxTunPacketSize = xot.MaxX25PacketSize + 5
-	ARPHRD_X25       = 271
-	TUNSETLINK       = 0x400454cd
-	TUNSETIFF        = 0x400454ca
-	SIOCSIFFLAGS     = 0x8914
-	SIOCGIFFLAGS     = 0x8913
+	MaxTunPacketSize  = xot.MaxX25PacketSize + 5
+	ARPHRD_X25        = 271
+	TUNSETLINK        = 0x400454cd
+	TUNSETIFF         = 0x400454ca
+	SIOCSIFFLAGS      = 0x8914
+	SIOCGIFFLAGS      = 0x8913
 	SIOCADDRT         = 0x890B
 	SIOCDELRT         = 0x890C
 	SIOCX25GCAUSEDIAG = 0x89E4
 	IFF_UP            = 0x1
-	IFF_RUNNING      = 0x40
-	IFF_TUN          = 0x0001
-	IFF_TAP          = 0x0002
-	IFF_NO_PI        = 0x1000
+	IFF_RUNNING       = 0x40
+	IFF_TUN           = 0x0001
+	IFF_TAP           = 0x0002
+	IFF_NO_PI         = 0x1000
 
 	TunHeaderData       = 0x00
 	TunHeaderConnect    = 0x01
@@ -84,16 +85,13 @@ type TunGateway struct {
 	ifce *TunInterface
 	cm   *xot.ConfigManager
 	mu   sync.Mutex
-	// Map (conn, incomingLCI) -> tunLCI
-	incomingToTun map[string]uint16
+	// Map conn -> incomingLCI -> tunLCI
+	connToLcis map[net.Conn]map[uint16]uint16
 	// Map tunLCI -> (conn, incomingLCI)
 	tunToIncoming map[uint16]sessionInfo
 	nextTunLCI    uint16
 	tunLciStart   uint16
 	tunLciEnd     uint16
-	
-	// xot-gateway connection for intercepted calls
-	gwyConn net.Conn
 
 	// Routing state
 	routeMu       sync.Mutex
@@ -103,21 +101,54 @@ type TunGateway struct {
 func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
 	tg.mu.Lock()
 	defer tg.mu.Unlock()
-	
-	key := fmt.Sprintf("%p:%d", conn, incomingLCI)
-	if lci, ok := tg.incomingToTun[key]; ok {
+
+	if tg.connToLcis[conn] == nil {
+		tg.connToLcis[conn] = make(map[uint16]uint16)
+	}
+
+	if lci, ok := tg.connToLcis[conn][incomingLCI]; ok {
 		return lci
 	}
-	
-	lci := tg.nextTunLCI
-	tg.nextTunLCI++
-	if tg.nextTunLCI > tg.tunLciEnd {
-		tg.nextTunLCI = tg.tunLciStart
+
+	// Find a free LCI
+	startLCI := tg.nextTunLCI
+	for {
+		lci := tg.nextTunLCI
+		tg.nextTunLCI++
+		if tg.nextTunLCI > tg.tunLciEnd {
+			tg.nextTunLCI = tg.tunLciStart
+		}
+
+		if _, ok := tg.tunToIncoming[lci]; !ok {
+			tg.connToLcis[conn][incomingLCI] = lci
+			tg.tunToIncoming[lci] = sessionInfo{conn, incomingLCI}
+			return lci
+		}
+
+		if tg.nextTunLCI == startLCI {
+			// Exhausted all LCIs
+			log.Printf("TUN: LCI exhaustion! All %d LCIs are in use.", tg.tunLciEnd-tg.tunLciStart+1)
+			return 0
+		}
 	}
-	
-	tg.incomingToTun[key] = lci
-	tg.tunToIncoming[lci] = sessionInfo{conn, incomingLCI}
-	return lci
+}
+
+func (tg *TunGateway) cleanupConn(conn net.Conn) {
+	tg.mu.Lock()
+	defer tg.mu.Unlock()
+
+	lcis, ok := tg.connToLcis[conn]
+	if !ok {
+		return
+	}
+
+	for _, tunLCI := range lcis {
+		delete(tg.tunToIncoming, tunLCI)
+		// Notify kernel that this LCI is gone
+		clr := xot.CreateClearRequest(tunLCI, xot.CauseOutofOrder, 0)
+		WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
+	}
+	delete(tg.connToLcis, conn)
 }
 
 func SetupTun(name string, create bool) (*TunInterface, error) {
@@ -266,7 +297,7 @@ func WriteTun(ifce *TunInterface, header byte, data []byte) error {
 
 func main() {
 	flag.Parse()
-	
+
 	if *statsPort > 0 {
 		xot.StartStatsServer(*statsPort)
 	}
@@ -281,7 +312,7 @@ func main() {
 			log.Printf("Warning: Failed to load config: %v", err)
 		}
 	}
-	
+
 	var tunCfg xot.TunConfig
 	if cm != nil {
 		tunCfg = cm.GetTunConfig()
@@ -294,24 +325,26 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to setup TUN: %v", err)
 	}
-	
+
 	tg := &TunGateway{
-		ifce: ifce,
-		cm: cm,
-		incomingToTun: make(map[string]uint16),
+		ifce:          ifce,
+		cm:            cm,
+		connToLcis:    make(map[net.Conn]map[uint16]uint16),
 		tunToIncoming: make(map[uint16]sessionInfo),
-		tunLciStart: uint16(tunCfg.LciStart),
-		tunLciEnd: uint16(tunCfg.LciEnd),
-		nextTunLCI: uint16(tunCfg.LciStart),
+		tunLciStart:   uint16(tunCfg.LciStart),
+		tunLciEnd:     uint16(tunCfg.LciEnd),
+		nextTunLCI:    uint16(tunCfg.LciStart),
 		currentRoutes: make(map[string]int),
 	}
-	
+
 	// Initial route sync
 	tg.SyncRoutes()
-	
+
 	// Watch config for changes
 	go func() {
 		xot.ThreadStarts.Add("watch_config", 1)
+		xot.ThreadsActive.Add("watch_config", 1)
+		defer xot.ThreadsActive.Add("watch_config", -1)
 		tg.watchConfig()
 	}()
 
@@ -323,23 +356,27 @@ func main() {
 		log.Fatalf("Failed to listen on %s: %v", sockPath, err)
 	}
 	log.Printf("tun-gateway listening on %s", sockPath)
-	
+
 	// Handle TUN reads
 	go func() {
 		xot.ThreadStarts.Add("tun_read_handler", 1)
+		xot.ThreadsActive.Add("tun_read_handler", 1)
+		defer xot.ThreadsActive.Add("tun_read_handler", -1)
 		tg.handleTunRead()
 	}()
-	
+
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		xot.ThreadStarts.Add("signal_handler", 1)
+		xot.ThreadsActive.Add("signal_handler", 1)
+		defer xot.ThreadsActive.Add("signal_handler", -1)
 		<-sigChan
 		os.Remove(sockPath)
 		os.Exit(0)
 	}()
-	
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -348,6 +385,8 @@ func main() {
 		xot.SessionsOpened.Add(1)
 		go func() {
 			xot.ThreadStarts.Add("server_conn_handler", 1)
+			xot.ThreadsActive.Add("server_conn_handler", 1)
+			defer xot.ThreadsActive.Add("server_conn_handler", -1)
 			tg.handleServerConn(conn)
 			xot.SessionsClosed.Add(1)
 		}()
@@ -356,10 +395,11 @@ func main() {
 
 func (tg *TunGateway) handleServerConn(conn net.Conn) {
 	defer conn.Close()
+	defer tg.cleanupConn(conn)
 	fd := xot.GetFd(conn)
 	source := fmt.Sprintf("SVR(%d)", fd)
 	tunDest := fmt.Sprintf("TUN(%d)", tg.ifce.Fd())
-	
+
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
@@ -379,7 +419,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			return
 		}
 		xot.BytesReceived.Add("SVR", int64(len(data)))
-		
+
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
@@ -402,12 +442,18 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		if *trace {
 			xot.LogTrace(source, tunDest, pkt)
 		}
-		
+
 		// Remap LCI
 		incomingLCI := pkt.LCI
 		tunLCI := tg.getTunLCI(conn, incomingLCI)
+		if tunLCI == 0 {
+			log.Printf("%s: Failed to allocate tunLCI for incoming LCI %d", source, incomingLCI)
+			clr := xot.CreateClearRequest(incomingLCI, xot.CauseNetworkCongestion, 0)
+			xot.SendXot(conn, clr.Serialize())
+			continue
+		}
 		pkt.LCI = tunLCI
-		
+
 		// Always use TunHeaderData (0x00) for sending to TUN as per user feedback
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
 		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
@@ -497,7 +543,7 @@ func (tg *TunGateway) handleTunRead() {
 			if *trace {
 				xot.LogTrace(tunSource, dest, pkt)
 			}
-			
+
 			if pkt.GetBaseType() == xot.PktTypeCallConnected {
 				log.Printf("TUN: Call connected on LCI %d", pkt.LCI)
 			} else if pkt.GetBaseType() == xot.PktTypeClearRequest {
@@ -509,7 +555,7 @@ func (tg *TunGateway) handleTunRead() {
 		} else if *trace {
 			log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pkt.TypeName(), pkt.LCI)
 		}
-		
+
 		// Handle disconnect header from TUN
 		if hdr == TunHeaderDisconnect {
 			// We could proactively clean up the session here if we wanted
@@ -518,20 +564,18 @@ func (tg *TunGateway) handleTunRead() {
 }
 
 func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
-	tg.mu.Lock()
-	if tg.gwyConn == nil {
-		conn, err := net.Dial("unixpacket", "/tmp/xot_gwy.sock")
-		if err != nil {
-			tg.mu.Unlock()
-			log.Printf("Failed to connect to xot-gateway: %v", err)
-			return
-		}
-		tg.gwyConn = conn
-		go tg.handleGatewayRead(conn)
+	conn, err := net.Dial("unixpacket", "/tmp/xot_gwy.sock")
+	if err != nil {
+		log.Printf("Failed to connect to xot-gateway: %v", err)
+		return
 	}
-	conn := tg.gwyConn
-	tg.mu.Unlock()
-	
+	go func() {
+		xot.ThreadStarts.Add("gateway_read_handler", 1)
+		xot.ThreadsActive.Add("gateway_read_handler", 1)
+		defer xot.ThreadsActive.Add("gateway_read_handler", -1)
+		tg.handleGatewayRead(conn)
+	}()
+
 	if *trace {
 		xot.LogTrace(fmt.Sprintf("TUN(%d)", tg.ifce.Fd()), fmt.Sprintf("GWY(%d)", xot.GetFd(conn)), pkt)
 	}
@@ -541,17 +585,13 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 }
 
 func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
-	defer func() {
-		tg.mu.Lock()
-		tg.gwyConn = nil
-		tg.mu.Unlock()
-		conn.Close()
-	}()
-	
+	defer conn.Close()
+	defer tg.cleanupConn(conn)
+
 	fd := xot.GetFd(conn)
 	source := fmt.Sprintf("GWY(%d)", fd)
 	tunDest := fmt.Sprintf("TUN(%d)", tg.ifce.Fd())
-	
+
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
@@ -571,7 +611,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			return
 		}
 		xot.BytesReceived.Add("GWY", int64(len(data)))
-		
+
 		if *trace {
 			pkt, err := xot.ParseX25(data)
 			if err == nil {
@@ -601,7 +641,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 		} else if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
 			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
 		}
-		
+
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
 		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 	}

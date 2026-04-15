@@ -43,7 +43,7 @@ func TestParseCallRequest(t *testing.T) {
 	// GFI=1, LCI=1, Type=CallRequest, AddrLens=0x21 (Called=2, Calling=1), Addrs=0x12, 0x30
 	data := []byte{0x10, 0x01, 0x0B, 0x21, 0x12, 0x30}
 	pkt, _ := ParseX25(data)
-	
+
 	called, calling, err := pkt.ParseCallRequest()
 	if err != nil {
 		t.Fatalf("ParseCallRequest failed: %v", err)

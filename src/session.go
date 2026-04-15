@@ -19,7 +19,7 @@ type SessionManager struct {
 	mu               sync.RWMutex
 	sessionsByLocal  map[uint16]*Session
 	sessionsByRemote map[string]map[uint16]*Session // serverIP -> remoteLCI -> session
-	usedRemoteLCIs   map[string]map[uint16]bool    // serverIP -> LCI -> used
+	usedRemoteLCIs   map[string]map[uint16]bool     // serverIP -> LCI -> used
 }
 
 func NewSessionManager() *SessionManager {

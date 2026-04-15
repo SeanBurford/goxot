@@ -23,7 +23,7 @@ type TunConfig struct {
 }
 
 type Config struct {
-	Tun     TunConfig          `json:"tun"`
+	Tun     TunConfig         `json:"tun"`
 	Servers []XotServerConfig `json:"servers"`
 }
 
