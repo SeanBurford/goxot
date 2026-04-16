@@ -43,8 +43,8 @@ func TestParseCallRequest(t *testing.T) {
 	// GFI=1, LCI=1, Type=CallRequest, AddrLens=0x21 (Called=2, Calling=1), Addrs=0x12, 0x30
 	data := []byte{0x10, 0x01, 0x0B, 0x21, 0x12, 0x30}
 	pkt, _ := ParseX25(data)
-
-	called, calling, err := pkt.ParseCallRequest()
+	
+	called, calling, _, _, err := pkt.ParseCallRequest()
 	if err != nil {
 		t.Fatalf("ParseCallRequest failed: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestParseCallRequest(t *testing.T) {
 	// AddrLens=0x32 (Called=3, Calling=2), Addrs=0x12, 0x34, 0x50
 	data2 := []byte{0x10, 0x01, 0x0B, 0x32, 0x12, 0x34, 0x50}
 	pkt2, _ := ParseX25(data2)
-	called2, calling2, err2 := pkt2.ParseCallRequest()
+	called2, calling2, _, _, err2 := pkt2.ParseCallRequest()
 	if err2 != nil {
 		t.Fatalf("ParseCallRequest failed: %v", err2)
 	}
@@ -83,7 +83,7 @@ func TestParseX25Short(t *testing.T) {
 func TestParseCallRequestShort(t *testing.T) {
 	data := []byte{0x10, 0x01, 0x0B} // No payload
 	pkt, _ := ParseX25(data)
-	_, _, err := pkt.ParseCallRequest()
+	_, _, _, _, err := pkt.ParseCallRequest()
 	if err == nil {
 		t.Errorf("Expected error for short call request payload")
 	}

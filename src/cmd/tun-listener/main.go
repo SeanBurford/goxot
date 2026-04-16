@@ -107,19 +107,19 @@ func handleConn(fd int, sa sockaddr_x25) {
 	var fac x25_facilities
 	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCX25GFACILITIES, uintptr(unsafe.Pointer(&fac)))
 	if errno == 0 {
-		fmt.Fprintf(f, "Facilities: WinIn=%d, WinOut=%d, PktIn=%d, PktOut=%d\r\n", fac.Winsize_in, fac.Winsize_out, 1<<fac.Psize_in, 1<<fac.Psize_out)
+		fmt.Fprintf(f, "Facilities: WinIn=%d, WinOut=%d, PktIn=%d, PktOut=%d\r\n", fac.Winsize_in, fac.Winsize_out, 1 << fac.Psize_in, 1 << fac.Psize_out)
 	}
 
 	// Set read timeout for idle disconnection
 	idleTimeout := 5 * time.Second
-
+	
 	// Just read and discard for now
 	buf := make([]byte, 4096)
 	for {
-		// We use syscall.Setoptsockopt to set timeout if we were using net.Conn,
+		// We use syscall.Setoptsockopt to set timeout if we were using net.Conn, 
 		// but since we are using os.File, we can use SetReadDeadline if we wrap it back or just use a timer.
 		// Actually, since it's a raw FD, we should use syscall.Select or set SO_RCVTIMEO.
-
+		
 		tv := syscall.NsecToTimeval(idleTimeout.Nanoseconds())
 		syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 

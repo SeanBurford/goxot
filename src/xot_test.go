@@ -88,11 +88,11 @@ func TestReadXotOversized(t *testing.T) {
 	m := &mockConn{
 		readBuf: bytes.NewBuffer(nil),
 	}
-
+	
 	// Header says 5000 bytes, which is > MaxX25PacketSize
 	header := []byte{0x00, 0x00, 0x13, 0x88} // 0x1388 = 5000
 	m.readBuf.Write(header)
-
+	
 	_, err := ReadXot(m)
 	if err == nil {
 		t.Errorf("Expected error for oversized packet")

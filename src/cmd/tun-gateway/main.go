@@ -26,21 +26,26 @@ var (
 )
 
 const (
-	MaxTunPacketSize  = xot.MaxX25PacketSize + 5
-	ARPHRD_X25        = 271
-	TUNSETLINK        = 0x400454cd
-	TUNSETIFF         = 0x400454ca
-	SIOCSIFFLAGS      = 0x8914
-	SIOCGIFFLAGS      = 0x8913
+	MaxTunPacketSize = xot.MaxX25PacketSize + 5
+)
+
+const (
+	ARPHRD_X25       = 271
+	TUNSETLINK       = 0x400454cd
+	TUNSETIFF        = 0x400454ca
+	SIOCSIFFLAGS     = 0x8914
+	SIOCGIFFLAGS     = 0x8913
 	SIOCADDRT         = 0x890B
 	SIOCDELRT         = 0x890C
 	SIOCX25GCAUSEDIAG = 0x89E4
 	IFF_UP            = 0x1
-	IFF_RUNNING       = 0x40
-	IFF_TUN           = 0x0001
-	IFF_TAP           = 0x0002
-	IFF_NO_PI         = 0x1000
+	IFF_RUNNING      = 0x40
+	IFF_TUN          = 0x0001
+	IFF_TAP          = 0x0002
+	IFF_NO_PI        = 0x1000
+)
 
+const (
 	TunHeaderData       = 0x00
 	TunHeaderConnect    = 0x01
 	TunHeaderDisconnect = 0x02
@@ -92,7 +97,7 @@ type TunGateway struct {
 	nextTunLCI    uint16
 	tunLciStart   uint16
 	tunLciEnd     uint16
-
+	
 	// Routing state
 	routeMu       sync.Mutex
 	currentRoutes map[string]int // prefix -> digits
@@ -101,15 +106,15 @@ type TunGateway struct {
 func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
 	tg.mu.Lock()
 	defer tg.mu.Unlock()
-
+	
 	if tg.connToLcis[conn] == nil {
 		tg.connToLcis[conn] = make(map[uint16]uint16)
 	}
-
+	
 	if lci, ok := tg.connToLcis[conn][incomingLCI]; ok {
 		return lci
 	}
-
+	
 	// Find a free LCI
 	startLCI := tg.nextTunLCI
 	for {
@@ -118,13 +123,13 @@ func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
 		if tg.nextTunLCI > tg.tunLciEnd {
 			tg.nextTunLCI = tg.tunLciStart
 		}
-
+		
 		if _, ok := tg.tunToIncoming[lci]; !ok {
 			tg.connToLcis[conn][incomingLCI] = lci
 			tg.tunToIncoming[lci] = sessionInfo{conn, incomingLCI}
 			return lci
 		}
-
+		
 		if tg.nextTunLCI == startLCI {
 			// Exhausted all LCIs
 			log.Printf("TUN: LCI exhaustion! All %d LCIs are in use.", tg.tunLciEnd-tg.tunLciStart+1)
@@ -136,12 +141,12 @@ func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
 func (tg *TunGateway) cleanupConn(conn net.Conn) {
 	tg.mu.Lock()
 	defer tg.mu.Unlock()
-
+	
 	lcis, ok := tg.connToLcis[conn]
 	if !ok {
 		return
 	}
-
+	
 	for _, tunLCI := range lcis {
 		delete(tg.tunToIncoming, tunLCI)
 		// Notify kernel that this LCI is gone
@@ -297,7 +302,7 @@ func WriteTun(ifce *TunInterface, header byte, data []byte) error {
 
 func main() {
 	flag.Parse()
-
+	
 	if *statsPort > 0 {
 		xot.StartStatsServer(*statsPort)
 	}
@@ -312,7 +317,7 @@ func main() {
 			log.Printf("Warning: Failed to load config: %v", err)
 		}
 	}
-
+	
 	var tunCfg xot.TunConfig
 	if cm != nil {
 		tunCfg = cm.GetTunConfig()
@@ -325,21 +330,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to setup TUN: %v", err)
 	}
-
+	
 	tg := &TunGateway{
-		ifce:          ifce,
-		cm:            cm,
-		connToLcis:    make(map[net.Conn]map[uint16]uint16),
+		ifce: ifce,
+		cm: cm,
+		connToLcis: make(map[net.Conn]map[uint16]uint16),
 		tunToIncoming: make(map[uint16]sessionInfo),
-		tunLciStart:   uint16(tunCfg.LciStart),
-		tunLciEnd:     uint16(tunCfg.LciEnd),
-		nextTunLCI:    uint16(tunCfg.LciStart),
+		tunLciStart: uint16(tunCfg.LciStart),
+		tunLciEnd: uint16(tunCfg.LciEnd),
+		nextTunLCI: uint16(tunCfg.LciStart),
 		currentRoutes: make(map[string]int),
 	}
-
+	
 	// Initial route sync
 	tg.SyncRoutes()
-
+	
 	// Watch config for changes
 	go func() {
 		xot.ThreadStarts.Add("watch_config", 1)
@@ -356,7 +361,7 @@ func main() {
 		log.Fatalf("Failed to listen on %s: %v", sockPath, err)
 	}
 	log.Printf("tun-gateway listening on %s", sockPath)
-
+	
 	// Handle TUN reads
 	go func() {
 		xot.ThreadStarts.Add("tun_read_handler", 1)
@@ -364,7 +369,7 @@ func main() {
 		defer xot.ThreadsActive.Add("tun_read_handler", -1)
 		tg.handleTunRead()
 	}()
-
+	
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -376,7 +381,7 @@ func main() {
 		os.Remove(sockPath)
 		os.Exit(0)
 	}()
-
+	
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -399,7 +404,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 	fd := xot.GetFd(conn)
 	source := fmt.Sprintf("SVR(%d)", fd)
 	tunDest := fmt.Sprintf("TUN(%d)", tg.ifce.Fd())
-
+	
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
@@ -419,7 +424,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			return
 		}
 		xot.BytesReceived.Add("SVR", int64(len(data)))
-
+		
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
@@ -435,25 +440,33 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			return
 		}
 
-		if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
-			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
+		// Remap LCI
+		incomingLCI := pkt.LCI
+
+		if pkt.GetBaseType() == xot.PktTypeClearRequest || pkt.GetBaseType() == xot.PktTypeClearConfirm {
+			log.Printf("%s: Call cleared on LCI %d (type: %s)", source, incomingLCI, pkt.TypeName())
+			if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
+				xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
+			}
+			// Forward to TUN before exiting
+			WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
+			xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
+			return
 		}
 
 		if *trace {
 			xot.LogTrace(source, tunDest, pkt)
 		}
 
-		// Remap LCI
-		incomingLCI := pkt.LCI
 		tunLCI := tg.getTunLCI(conn, incomingLCI)
 		if tunLCI == 0 {
 			log.Printf("%s: Failed to allocate tunLCI for incoming LCI %d", source, incomingLCI)
 			clr := xot.CreateClearRequest(incomingLCI, xot.CauseNetworkCongestion, 0)
 			xot.SendXot(conn, clr.Serialize())
-			continue
+			return
 		}
 		pkt.LCI = tunLCI
-
+		
 		// Always use TunHeaderData (0x00) for sending to TUN as per user feedback
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
 		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
@@ -524,9 +537,9 @@ func (tg *TunGateway) handleTunRead() {
 		// Check for intercepted call
 		if pkt.GetBaseType() == xot.PktTypeCallRequest {
 			xot.CallsReceived.Add("TUN", 1)
-			called, calling, err := pkt.ParseCallRequest()
+			called, calling, fac, _, err := pkt.ParseCallRequest()
 			if err == nil && tg.cm.GetServer(called) != nil {
-				log.Printf("TUN: Intercepting CALL_REQ from %s to %s", calling, called)
+				log.Printf("TUN: Intercepting CALL_REQ from %s to %s (fac: %s)", calling, called, xot.FormatFacilities(fac))
 				tg.forwardToGateway(pkt)
 				continue
 			}
@@ -543,9 +556,13 @@ func (tg *TunGateway) handleTunRead() {
 			if *trace {
 				xot.LogTrace(tunSource, dest, pkt)
 			}
-
+			
 			if pkt.GetBaseType() == xot.PktTypeCallConnected {
-				log.Printf("TUN: Call connected on LCI %d", pkt.LCI)
+				facStr := ""
+				if _, _, fac, _, err := pkt.ParseCallConnected(); err == nil {
+					facStr = fmt.Sprintf(" (fac: %s)", xot.FormatFacilities(fac))
+				}
+				log.Printf("TUN: Call connected on LCI %d%s", pkt.LCI, facStr)
 			} else if pkt.GetBaseType() == xot.PktTypeClearRequest {
 				log.Printf("TUN: Call cleared on LCI %d", pkt.LCI)
 			}
@@ -555,7 +572,7 @@ func (tg *TunGateway) handleTunRead() {
 		} else if *trace {
 			log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pkt.TypeName(), pkt.LCI)
 		}
-
+		
 		// Handle disconnect header from TUN
 		if hdr == TunHeaderDisconnect {
 			// We could proactively clean up the session here if we wanted
@@ -567,15 +584,29 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	conn, err := net.Dial("unixpacket", "/tmp/xot_gwy.sock")
 	if err != nil {
 		log.Printf("Failed to connect to xot-gateway: %v", err)
+		// Send CLEAR back to TUN
+		clr := xot.CreateClearRequest(pkt.LCI, xot.CauseNetworkCongestion, 0)
+		WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
 		return
 	}
+
+	// Record session mapping
+	tg.mu.Lock()
+	if tg.connToLcis[conn] == nil {
+		tg.connToLcis[conn] = make(map[uint16]uint16)
+	}
+	// For outgoing calls, the LCI on the gateway connection is the same as on the TUN
+	tg.connToLcis[conn][pkt.LCI] = pkt.LCI
+	tg.tunToIncoming[pkt.LCI] = sessionInfo{conn, pkt.LCI}
+	tg.mu.Unlock()
+
 	go func() {
 		xot.ThreadStarts.Add("gateway_read_handler", 1)
 		xot.ThreadsActive.Add("gateway_read_handler", 1)
 		defer xot.ThreadsActive.Add("gateway_read_handler", -1)
 		tg.handleGatewayRead(conn)
 	}()
-
+	
 	if *trace {
 		xot.LogTrace(fmt.Sprintf("TUN(%d)", tg.ifce.Fd()), fmt.Sprintf("GWY(%d)", xot.GetFd(conn)), pkt)
 	}
@@ -587,11 +618,11 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 	defer conn.Close()
 	defer tg.cleanupConn(conn)
-
+	
 	fd := xot.GetFd(conn)
 	source := fmt.Sprintf("GWY(%d)", fd)
 	tunDest := fmt.Sprintf("TUN(%d)", tg.ifce.Fd())
-
+	
 	for {
 		data, err := xot.ReadXot(conn)
 		if err != nil {
@@ -611,22 +642,25 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			return
 		}
 		xot.BytesReceived.Add("GWY", int64(len(data)))
-
-		if *trace {
-			pkt, err := xot.ParseX25(data)
-			if err == nil {
-				xot.LogTrace(source, tunDest, pkt)
-			} else {
-				log.Printf("%s>%s UNKNOWN % X", source, tunDest, data)
-			}
-		}
-
+		
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
 			continue
 		}
 		xot.PacketsHandled.Add(pkt.TypeName(), 1)
+
+		// Remap LCI
+		incomingLCI := pkt.LCI
+		tg.mu.Lock()
+		tunLCI, ok := tg.connToLcis[conn][incomingLCI]
+		tg.mu.Unlock()
+
+		if !ok {
+			log.Printf("%s: No session for gateway LCI %d", source, incomingLCI)
+			continue
+		}
+		pkt.LCI = tunLCI
 
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v from gateway", source, err)
@@ -636,12 +670,23 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			return
 		}
 
-		if pkt.GetBaseType() == xot.PktTypeCallConnected {
-			xot.CallsReceived.Add("GWY", 1)
-		} else if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
-			xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
+		if *trace {
+			xot.LogTrace(source, tunDest, pkt)
 		}
 
+		if pkt.GetBaseType() == xot.PktTypeCallConnected {
+			xot.CallsReceived.Add("GWY", 1)
+		} else if pkt.GetBaseType() == xot.PktTypeClearRequest || pkt.GetBaseType() == xot.PktTypeClearConfirm {
+			log.Printf("%s: Call cleared on LCI %d (type: %s)", source, tunLCI, pkt.TypeName())
+			if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
+				xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
+			}
+			// Forward to TUN before exiting
+			WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
+			xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
+			return
+		}
+		
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
 		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 	}
@@ -652,6 +697,10 @@ func (tg *TunGateway) SyncRoutes() {
 	defer tg.routeMu.Unlock()
 
 	servers := tg.cm.GetServers()
+	if servers == nil {
+		log.Printf("Warning: No servers configured, skipping route sync")
+		return
+	}
 	newRoutes := make(map[string]int)
 	for _, srv := range servers {
 		parts := strings.Split(srv.Prefix, "/")

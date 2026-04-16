@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	xot "github.com/SeanBurford/goxot"
 	"io"
 	"log"
 	"net"
@@ -14,6 +13,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	xot "github.com/SeanBurford/goxot"
 )
 
 var (
@@ -66,7 +67,7 @@ func main() {
 
 		if sig == syscall.SIGHUP {
 			log.Printf("Graceful shutdown: waiting up to %d seconds...", *gracePeriod)
-
+			
 			// Wait for grace period or all connections to finish
 			done := make(chan struct{})
 			go func() {
@@ -88,22 +89,22 @@ func main() {
 		activeConns.Range(func(key, value interface{}) bool {
 			conn := key.(net.Conn)
 			stop := value.(chan struct{})
-
+			
 			// Signal the relay loop to stop
 			select {
 			case <-stop:
 			default:
 				close(stop)
 			}
-
-			// We don't know the LCI here easily without more tracking,
+			
+			// We don't know the LCI here easily without more tracking, 
 			// but we can at least close the connection.
 			// Actually, we should try to send a Clear Request if we can.
 			// For now, just close the connection as handleIncomingXot will handle it.
 			conn.Close()
 			return true
 		})
-
+		
 		os.Exit(0)
 	}()
 
@@ -186,11 +187,11 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		xot.CallsReceived.Add("XOT", 1)
 
 		lci := pkt.LCI
-		called, calling, err := pkt.ParseCallRequest()
+		called, calling, fac, _, err := pkt.ParseCallRequest()
 		if err != nil {
 			continue
 		}
-		log.Printf("%s: CALL_REQ from %s to %s", source, calling, called)
+		log.Printf("%s: CALL_REQ from %s to %s (fac: %s)", source, calling, called, xot.FormatFacilities(fac))
 
 		var destConn net.Conn
 		var destName string
@@ -212,7 +213,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			xot.SendXot(conn, clr.Serialize())
 			return
 		}
-
+		
 		// Inner function to handle the relay so we can defer destConn.Close() properly
 		func() {
 			defer destConn.Close()
@@ -231,7 +232,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			relayQuit := make(chan struct{})
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
-
+			
 			// Relay from destination to source
 			go func() {
 				xot.ThreadStarts.Add("relay_dest_to_source", 1)
@@ -251,7 +252,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							}
 							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot(conn, clr.Serialize())
-						} else if err != io.EOF {
+						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from %s: %v", source, destName, err)
 						}
 						select {
@@ -289,11 +290,20 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if p.GetBaseType() == xot.PktTypeCallConnected {
 							log.Printf("%s: Call connected on LCI %d", source, lci)
 							xot.CallsReceived.Add(destName, 1)
-						} else if p.GetBaseType() == xot.PktTypeClearRequest {
-							log.Printf("%s: Call cleared on LCI %d", source, lci)
-							if len(p.Payload) >= 1 {
+						} else if p.GetBaseType() == xot.PktTypeClearRequest || p.GetBaseType() == xot.PktTypeClearConfirm {
+							log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, p.TypeName())
+							if p.GetBaseType() == xot.PktTypeClearRequest && len(p.Payload) >= 1 {
 								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
 							}
+							// Forward the clear packet before exiting
+							xot.SendXot(conn, d)
+							xot.BytesSent.Add("XOT", int64(len(d)))
+							select {
+							case <-relayQuit:
+							default:
+								close(relayQuit)
+							}
+							return
 						}
 						if *trace {
 							xot.LogTrace(dest, source, p)
@@ -324,7 +334,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							}
 							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot(conn, clr.Serialize())
-						} else if err != io.EOF {
+						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from source: %v", source, err)
 						}
 						select {
@@ -359,11 +369,20 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							xot.SendXot(conn, clr.Serialize())
 							return
 						}
-						if p.GetBaseType() == xot.PktTypeClearRequest {
-							log.Printf("%s: Call cleared on LCI %d", source, lci)
-							if len(p.Payload) >= 1 {
+						if p.GetBaseType() == xot.PktTypeClearRequest || p.GetBaseType() == xot.PktTypeClearConfirm {
+							log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, p.TypeName())
+							if p.GetBaseType() == xot.PktTypeClearRequest && len(p.Payload) >= 1 {
 								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
 							}
+							// Forward the clear packet before exiting
+							xot.SendXot(destConn, d)
+							xot.BytesSent.Add(destName, int64(len(d)))
+							select {
+							case <-relayQuit:
+							default:
+								close(relayQuit)
+							}
+							return
 						}
 						if *trace {
 							xot.LogTrace(source, dest, p)
@@ -380,20 +399,20 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				// One side closed naturally
 			case <-stop:
 				// Shutdown triggered
-				xot.CausesGenerated.Add("0x01", 1)
+				xot.CausesGenerated.Add(fmt.Sprintf("0x%02x", xot.CauseOutofOrder), 1)
 				clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
 				if *trace {
 					xot.LogTrace("SHUTDOWN", source, clr)
 				}
 				xot.SendXot(conn, clr.Serialize())
 			}
-
+			
 			// Ensure both goroutines exit by closing connections
 			destConn.Close()
 			conn.Close()
 			relayWg.Wait()
 		}()
-
+		
 		if shuttingDown.Load() {
 			return
 		}
