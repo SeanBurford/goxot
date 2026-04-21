@@ -34,6 +34,13 @@ typedef struct {
     atomic_int min_pacsize_out;
     atomic_int min_winsize_in;
     atomic_int min_winsize_out;
+    atomic_long socket_error;
+    atomic_long setsockopt_error;
+    atomic_long bind_error;
+    atomic_long facilities_error;
+    atomic_long short_receive;
+    atomic_long write_error;
+    atomic_long accept_error;
 } stats_t;
 
 stats_t global_stats;
@@ -54,6 +61,15 @@ typedef struct {
 
 config_t cfg;
 
+typedef struct {
+    int start_hour;
+    int start_minute;
+    atomic_long seq_num;
+    char base_addr[7];
+} local_addr_info_t;
+
+local_addr_info_t local_addr_info;
+
 void update_max(atomic_int *ptr, int val) {
     int current = atomic_load(ptr);
     while (val > current && !atomic_compare_exchange_weak(ptr, &current, val));
@@ -64,12 +80,12 @@ void update_min(atomic_int *ptr, int val) {
     while (val < current && !atomic_compare_exchange_weak(ptr, &current, val));
 }
 
-void show_cause_x25(int sock, const char *prefix) {
+void show_cause_x25(int sock, const char *prefix, const char *local, const char *remote) {
     struct x25_causediag causediag;
     memset(&causediag, 0, sizeof(causediag));
     if (ioctl(sock, SIOCX25GCAUSEDIAG, &causediag) >= 0) {
         if (causediag.cause != 0 || causediag.diagnostic != 0) {
-            printf("%s Cause: 0x%02x, Diag: %d\n", prefix, causediag.cause, causediag.diagnostic);
+            printf("%s [%s -> %s] Cause: 0x%02x, Diag: %d\n", prefix, local, remote, causediag.cause, causediag.diagnostic);
         }
     }
 }
@@ -142,8 +158,17 @@ void *sender_thread(void *arg) {
         if (now_tv.tv_sec - start_tv.tv_sec >= cfg.run_time_s) break;
         if (cfg.max_calls > 0 && atomic_load(&global_stats.calls_made) >= cfg.max_calls) break;
 
+        char current_local[X25_ADDR_LEN];
+        int seq = (int)(atomic_fetch_add(&local_addr_info.seq_num, 1) % 100000);
+        snprintf(current_local, sizeof(current_local), "%.6s%02d%02d%05d", 
+                 local_addr_info.base_addr, 
+                 local_addr_info.start_hour, 
+                 local_addr_info.start_minute, 
+                 seq);
+
         int sock = socket(AF_X25, SOCK_SEQPACKET, 0);
         if (sock < 0) {
+            atomic_fetch_add(&global_stats.socket_error, 1);
             perror("socket");
             sleep(1);
             continue;
@@ -153,21 +178,21 @@ void *sender_thread(void *arg) {
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
         if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+            atomic_fetch_add(&global_stats.setsockopt_error, 1);
             perror("setsockopt(SO_RCVTIMEO)");
         }
 
-        // Bind to local address if specified
-        if (strlen(cfg.local_addr) > 0) {
-            struct sockaddr_x25 laddr;
-            memset(&laddr, 0, sizeof(laddr));
-            laddr.sx25_family = AF_X25;
-            strncpy(laddr.sx25_addr.x25_addr, cfg.local_addr, X25_ADDR_LEN - 1);
-            if (bind(sock, (struct sockaddr *)&laddr, sizeof(laddr)) < 0) {
-                perror("bind");
-                close(sock);
-                usleep(cfg.backoff_ms * 1000);
-                continue;
-            }
+        // Bind to generated local address
+        struct sockaddr_x25 laddr;
+        memset(&laddr, 0, sizeof(laddr));
+        laddr.sx25_family = AF_X25;
+        snprintf(laddr.sx25_addr.x25_addr, sizeof(laddr.sx25_addr.x25_addr), "%s", current_local);
+        if (bind(sock, (struct sockaddr *)&laddr, sizeof(laddr)) < 0) {
+            atomic_fetch_add(&global_stats.bind_error, 1);
+            perror("bind");
+            close(sock);
+            usleep(cfg.backoff_ms * 1000);
+            continue;
         }
 
         // Set facilities
@@ -179,24 +204,25 @@ void *sender_thread(void *arg) {
         facilities.pacsize_in = pac_log;
         facilities.pacsize_out = pac_log;
         if (ioctl(sock, SIOCX25SFACILITIES, &facilities) < 0) {
+            atomic_fetch_add(&global_stats.facilities_error, 1);
             perror("ioctl(SIOCX25SFACILITIES)");
         }
 
         long target_val = start_addr_val + (rand() % range);
         char target_addr[X25_ADDR_LEN];
-        snprintf(target_addr, X25_ADDR_LEN - 1, "%ld", target_val);
+        snprintf(target_addr, sizeof(target_addr), "%ld", target_val);
 
         struct sockaddr_x25 raddr;
         memset(&raddr, 0, sizeof(raddr));
         raddr.sx25_family = AF_X25;
-        strncpy(raddr.sx25_addr.x25_addr, target_addr, X25_ADDR_LEN - 1);
+        snprintf(raddr.sx25_addr.x25_addr, sizeof(raddr.sx25_addr.x25_addr), "%s", target_addr);
 
         atomic_fetch_add(&global_stats.calls_made, 1);
         if (connect(sock, (struct sockaddr *)&raddr, sizeof(raddr)) < 0) {
             atomic_fetch_add(&global_stats.calls_failed, 1);
-            char prefix[64];
-            snprintf(prefix, sizeof(prefix), "Thread %d: Call to %s failed", thread_id, target_addr);
-            show_cause_x25(sock, prefix);
+            char prefix[128];
+            snprintf(prefix, sizeof(prefix), "Thread %d: Call from %s to %s failed", thread_id, current_local, target_addr);
+            show_cause_x25(sock, prefix, current_local, target_addr);
             close(sock);
             usleep(cfg.backoff_ms * 1000);
             continue;
@@ -227,20 +253,22 @@ void *sender_thread(void *arg) {
             }
 
             if (received < sent) {
+                atomic_fetch_add(&global_stats.short_receive, 1);
                 atomic_fetch_add(&global_stats.data_mismatches, 1);
-                printf("Thread %d: Short receive: expected %d, got %d\n", thread_id, (int)sent, received);
+                printf("Thread %d: Short receive between %s/%s: expected %d, got %d\n", thread_id, current_local, target_addr, (int)sent, received);
             } else {
                 // Skip control byte (index 0) when comparing
                 for (int i = 1; i < sent; i++) {
                     if (send_buf[i] != recv_buf[i]) {
                         atomic_fetch_add(&global_stats.data_mismatches, 1);
-                        printf("Thread %d: Data mismatch at offset %d (expected 0x%02x, got 0x%02x)\n", 
-                                thread_id, i - 1, send_buf[i], recv_buf[i]);
+                        printf("Thread %d: Data mismatch between %s/%s at offset %d (expected 0x%02x, got 0x%02x)\n", 
+                                thread_id, current_local, target_addr, i - 1, send_buf[i], recv_buf[i]);
                         break;
                     }
                 }
             }
         } else if (sent < 0) {
+            atomic_fetch_add(&global_stats.write_error, 1);
             perror("write");
         }
 
@@ -302,10 +330,11 @@ void receiver_mode() {
     memset(&laddr, 0, sizeof(laddr));
     laddr.sx25_family = AF_X25;
     if (strlen(cfg.local_addr) > 0) {
-        strncpy(laddr.sx25_addr.x25_addr, cfg.local_addr, X25_ADDR_LEN - 1);
+        snprintf(laddr.sx25_addr.x25_addr, sizeof(laddr.sx25_addr.x25_addr), "%s", cfg.local_addr);
     }
     
     if (bind(sock, (struct sockaddr *)&laddr, sizeof(laddr)) < 0) {
+        atomic_fetch_add(&global_stats.bind_error, 1);
         perror("bind");
         close(sock);
         return;
@@ -320,6 +349,7 @@ void receiver_mode() {
     facilities.pacsize_in = pac_log;
     facilities.pacsize_out = pac_log;
     if (ioctl(sock, SIOCX25SFACILITIES, &facilities) < 0) {
+        atomic_fetch_add(&global_stats.facilities_error, 1);
         perror("ioctl(SIOCX25SFACILITIES)");
     }
 
@@ -336,6 +366,7 @@ void receiver_mode() {
         socklen_t rlen = sizeof(raddr);
         int client_sock = accept(sock, (struct sockaddr *)&raddr, &rlen);
         if (client_sock < 0) {
+            atomic_fetch_add(&global_stats.accept_error, 1);
             perror("accept");
             continue;
         }
@@ -369,6 +400,15 @@ void print_summary(double duration) {
     printf("Bytes Received: %ld\n", atomic_load(&global_stats.bytes_received));
     printf("Data Mismatches: %ld\n", atomic_load(&global_stats.data_mismatches));
     
+    printf("\n--- Errors/Timeouts ---\n");
+    printf("Socket Errors: %ld\n", atomic_load(&global_stats.socket_error));
+    printf("Setsockopt Errors: %ld\n", atomic_load(&global_stats.setsockopt_error));
+    printf("Bind Errors: %ld\n", atomic_load(&global_stats.bind_error));
+    printf("Facilities Errors: %ld\n", atomic_load(&global_stats.facilities_error));
+    printf("Short Receives: %ld\n", atomic_load(&global_stats.short_receive));
+    printf("Write Errors: %ld\n", atomic_load(&global_stats.write_error));
+    printf("Accept Errors: %ld\n", atomic_load(&global_stats.accept_error));
+
     int min_pin = atomic_load(&global_stats.min_pacsize_in);
     int max_pin = atomic_load(&global_stats.max_pacsize_in);
     int min_pout = atomic_load(&global_stats.min_pacsize_out);
@@ -440,6 +480,19 @@ int main(int argc, char *argv[]) {
     }
 
     srand(time(NULL));
+
+    // Initialize local address info
+    time_t rawtime = time(NULL);
+    struct tm *timeinfo = localtime(&rawtime);
+    local_addr_info.start_hour = timeinfo->tm_hour;
+    local_addr_info.start_minute = timeinfo->tm_min;
+    atomic_init(&local_addr_info.seq_num, 0);
+    if (strlen(cfg.local_addr) > 0) {
+        strncpy(local_addr_info.base_addr, cfg.local_addr, 6);
+        local_addr_info.base_addr[6] = '\0';
+    } else {
+        strcpy(local_addr_info.base_addr, "127001");
+    }
 
     gettimeofday(&global_start_total, NULL);
     signal(SIGINT, sigint_handler);
