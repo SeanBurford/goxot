@@ -184,15 +184,18 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		lci := pkt.LCI
 		called, calling, fac, _, err := pkt.ParseCallRequest()
 		if err != nil {
-			continue
+			log.Printf("%s: Malformed CALL_REQ from source: %v", source, err)
+			clr := xot.CreateClearRequest(lci, xot.CauseInvalidFacility, 0)
+			xot.SendXot(conn, clr.Serialize())
+			return
 		}
 		log.Printf("%s: CALL_REQ from %s to %s (fac: %s)", source, calling, called, xot.FormatFacilities(fac))
 
 		srv := cm.GetServer(called)
 		if srv == nil {
 			log.Printf("No route for %s", called)
-			// Send Clear Request back to source
-			clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
+			// Send Clear Request back to source - Use CauseNumberBusy (0x01) as per best practices
+			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
 			xot.SendXot(conn, clr.Serialize())
 			return
 		}
@@ -201,7 +204,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		ips, err := xot.ResolveXotDestination(called, srv)
 		if err != nil {
 			log.Printf("%s: Destination resolution failed for %s: %v", source, called, err)
-			clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
+			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
 			xot.SendXot(conn, clr.Serialize())
 			return
 		}
@@ -245,6 +248,12 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 			// Bidirectional relay
 			relayQuit := make(chan struct{})
+			var closeOnce sync.Once
+			closeRelay := func() {
+				closeOnce.Do(func() {
+					close(relayQuit)
+				})
+			}
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
 			
@@ -270,11 +279,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from remote: %v", source, err)
 						}
-						select {
-						case <-relayQuit:
-						default:
-							close(relayQuit)
-						}
+						closeRelay()
 						return
 					}
 					xot.BytesReceived.Add("XOT", int64(len(d)))
@@ -313,11 +318,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							// Forward the clear packet before exiting
 							xot.SendXot(conn, d)
 							xot.BytesSent.Add("GWY", int64(len(d)))
-							select {
-							case <-relayQuit:
-							default:
-								close(relayQuit)
-							}
+							closeRelay()
 							return
 						}
 						if *trace {
@@ -352,11 +353,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from local: %v", source, err)
 						}
-						select {
-						case <-relayQuit:
-						default:
-							close(relayQuit)
-						}
+						closeRelay()
 						return
 					}
 					xot.BytesReceived.Add("GWY", int64(len(d)))
@@ -386,11 +383,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							// Forward the clear packet before exiting
 							xot.SendXot(remoteConn, d)
 							xot.BytesSent.Add("XOT", int64(len(d)))
-							select {
-							case <-relayQuit:
-							default:
-								close(relayQuit)
-							}
+							closeRelay()
 							return
 						}
 					} else if *trace {

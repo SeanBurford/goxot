@@ -89,14 +89,7 @@ type sessionInfo struct {
 type TunGateway struct {
 	ifce *TunInterface
 	cm   *xot.ConfigManager
-	mu   sync.Mutex
-	// Map conn -> incomingLCI -> tunLCI
-	connToLcis map[net.Conn]map[uint16]uint16
-	// Map tunLCI -> (conn, incomingLCI)
-	tunToIncoming map[uint16]sessionInfo
-	nextTunLCI    uint16
-	tunLciStart   uint16
-	tunLciEnd     uint16
+	sm   *xot.SessionManager
 	
 	// Routing state
 	routeMu       sync.Mutex
@@ -104,56 +97,57 @@ type TunGateway struct {
 }
 
 func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
-	tg.mu.Lock()
-	defer tg.mu.Unlock()
-	
-	if tg.connToLcis[conn] == nil {
-		tg.connToLcis[conn] = make(map[uint16]uint16)
+	if s := tg.sm.GetByBConnLCI(conn, incomingLCI); s != nil {
+		return s.LciA
 	}
 	
-	if lci, ok := tg.connToLcis[conn][incomingLCI]; ok {
-		return lci
+	lci, err := tg.sm.AllocateTunLCI()
+	if err != nil {
+		log.Printf("TUN: %v", err)
+		return 0
 	}
 	
-	// Find a free LCI
-	startLCI := tg.nextTunLCI
-	for {
-		lci := tg.nextTunLCI
-		tg.nextTunLCI++
-		if tg.nextTunLCI > tg.tunLciEnd {
-			tg.nextTunLCI = tg.tunLciStart
-		}
-		
-		if _, ok := tg.tunToIncoming[lci]; !ok {
-			tg.connToLcis[conn][incomingLCI] = lci
-			tg.tunToIncoming[lci] = sessionInfo{conn, incomingLCI}
-			return lci
-		}
-		
-		if tg.nextTunLCI == startLCI {
-			// Exhausted all LCIs
-			log.Printf("TUN: LCI exhaustion! All %d LCIs are in use.", tg.tunLciEnd-tg.tunLciStart+1)
-			return 0
-		}
+	s := &xot.Session{
+		LciA:  lci,
+		LciB:  incomingLCI,
+		ConnB: conn,
+		State: xot.StateP1,
 	}
+	tg.sm.AddSession(s)
+	return lci
 }
 
 func (tg *TunGateway) cleanupConn(conn net.Conn) {
-	tg.mu.Lock()
-	defer tg.mu.Unlock()
-	
-	lcis, ok := tg.connToLcis[conn]
-	if !ok {
-		return
-	}
-	
-	for _, tunLCI := range lcis {
-		delete(tg.tunToIncoming, tunLCI)
-		// Notify kernel that this LCI is gone
-		clr := xot.CreateClearRequest(tunLCI, xot.CauseOutofOrder, 0)
+	sessions := tg.sm.GetSessionsForConn(conn)
+	for _, s := range sessions {
+		if *trace {
+			log.Printf("TUN: Cleaning up LCI %d - sending CLEAR_REQ to kernel", s.LciA)
+		}
+		// Send CLEAR back to kernel to move state machine
+		clr := xot.CreateClearRequest(s.LciA, xot.CauseOutofOrder, 0)
 		WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
+		
+		tg.sm.RemoveSession(s)
 	}
-	delete(tg.connToLcis, conn)
+}
+
+func (tg *TunGateway) removeTunLCI(tunLCI uint16) {
+	if s := tg.sm.GetByALCI(tunLCI); s != nil {
+		tg.sm.RemoveSession(s)
+	}
+}
+
+func (tg *TunGateway) closeAllSessions() {
+	sessions := tg.sm.GetAllSessions()
+	for _, s := range sessions {
+		// Forward CLEAR to gateway side
+		if s.ConnB != nil {
+			clr := xot.CreateClearRequest(s.LciB, xot.CauseNetworkCongestion, 0)
+			xot.SendXot(s.ConnB, clr.Serialize())
+		}
+		tg.sm.RemoveSession(s)
+	}
+	log.Printf("TUN: All %d sessions cleared", len(sessions))
 }
 
 func SetupTun(name string, create bool) (*TunInterface, error) {
@@ -333,12 +327,8 @@ func main() {
 	
 	tg := &TunGateway{
 		ifce: ifce,
-		cm: cm,
-		connToLcis: make(map[net.Conn]map[uint16]uint16),
-		tunToIncoming: make(map[uint16]sessionInfo),
-		tunLciStart: uint16(tunCfg.LciStart),
-		tunLciEnd: uint16(tunCfg.LciEnd),
-		nextTunLCI: uint16(tunCfg.LciStart),
+		cm:   cm,
+		sm:   xot.NewSessionManager(uint16(tunCfg.LciStart), uint16(tunCfg.LciEnd)),
 		currentRoutes: make(map[string]int),
 	}
 	
@@ -448,9 +438,22 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
 				xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
 			}
-			// Forward to TUN before exiting
-			WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
-			xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
+			
+			// Find and update session state
+			s := tg.sm.GetByBConnLCI(conn, incomingLCI)
+			if s != nil {
+				s.SetState(xot.StateP5)
+				// Remap LCI to TUN side
+				pkt.LCI = s.LciA
+				WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
+				xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
+				tg.sm.RemoveSession(s)
+			} else {
+				// We don't have a mapping for this clear? 
+				// This might happen if it's already gone or was never established.
+				// For now, log it.
+				log.Printf("%s: Received CLEAR for unknown LCI %d", source, incomingLCI)
+			}
 			return
 		}
 
@@ -525,6 +528,9 @@ func (tg *TunGateway) handleTunRead() {
 			if *trace {
 				log.Printf("%s> RESTART_REQ (hdr=0x%02X) - sending RESTART_CONF", tunSource, hdr)
 			}
+			// We don't wipe sessions here because the Linux kernel often sends a decorative
+			// RESTART right as the interface comes up, even if it's currently in the middle 
+			// of accepting a call (flapping). 
 			conf := &xot.X25Packet{
 				GFI:  xot.GFIStandard,
 				LCI:  0,
@@ -536,6 +542,15 @@ func (tg *TunGateway) handleTunRead() {
 
 		// Check for intercepted call
 		if pkt.GetBaseType() == xot.PktTypeCallRequest {
+			// If we have an existing session for this LCI, remove it.
+			// The kernel is initiating a new call on this LCI.
+			if s := tg.sm.GetByALCI(pkt.LCI); s != nil {
+				if *trace {
+					log.Printf("TUN: New CALL_REQ on busy LCI %d - clearing old session", pkt.LCI)
+				}
+				tg.sm.RemoveSession(s)
+			}
+
 			xot.CallsReceived.Add("TUN", 1)
 			called, calling, fac, _, err := pkt.ParseCallRequest()
 			if err == nil && tg.cm.GetServer(called) != nil {
@@ -546,13 +561,11 @@ func (tg *TunGateway) handleTunRead() {
 		}
 
 		// Find session
-		tg.mu.Lock()
-		info, ok := tg.tunToIncoming[pkt.LCI]
-		tg.mu.Unlock()
+		s := tg.sm.GetByALCI(pkt.LCI)
 
-		if ok {
-			pkt.LCI = info.lci
-			dest := fmt.Sprintf("SVR(%d)", xot.GetFd(info.conn))
+		if s != nil {
+			pkt.LCI = s.LciB
+			dest := fmt.Sprintf("SVR(%d)", xot.GetFd(s.ConnB))
 			if *trace {
 				xot.LogTrace(tunSource, dest, pkt)
 			}
@@ -563,19 +576,48 @@ func (tg *TunGateway) handleTunRead() {
 					facStr = fmt.Sprintf(" (fac: %s)", xot.FormatFacilities(fac))
 				}
 				log.Printf("TUN: Call connected on LCI %d%s", pkt.LCI, facStr)
+				s.SetState(xot.StateP4)
 			} else if pkt.GetBaseType() == xot.PktTypeClearRequest {
-				log.Printf("TUN: Call cleared on LCI %d", pkt.LCI)
+				log.Printf("TUN: Clear Request from kernel on LCI %d", pkt.LCI)
+				s.SetState(xot.StateP5)
+				
+				// Respond with Clear Confirmation to kernel immediately
+				conf := &xot.X25Packet{
+					GFI:  pkt.GFI,
+					LCI:  pkt.LCI,
+					Type: xot.PktTypeClearConfirm,
+				}
+				WriteTun(tg.ifce, TunHeaderData, conf.Serialize())
+				
+				// Forward CLEAR to gateway and cleanup
+				xot.SendXot(s.ConnB, pkt.Serialize())
+				tg.sm.RemoveSession(s)
+				continue
+			} else if pkt.GetBaseType() == xot.PktTypeClearConfirm {
+				log.Printf("TUN: Clear Confirmation from kernel on LCI %d", pkt.LCI)
+				tg.sm.RemoveSession(s)
+				xot.SendXot(s.ConnB, pkt.Serialize())
+				continue
 			}
 
-			xot.SendXot(info.conn, pkt.Serialize())
+			xot.SendXot(s.ConnB, pkt.Serialize())
 			xot.BytesSent.Add("SVR", int64(len(pkt.Serialize())))
 		} else if *trace {
 			log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pkt.TypeName(), pkt.LCI)
+			
+			// If the kernel sends us something for an LCI we don't know, we must REJECT it
+			// otherwise the kernel application (like stress_test) might hang in st=1 or st=2.
+			if pkt.GetBaseType() != xot.PktTypeClearRequest && pkt.GetBaseType() != xot.PktTypeClearConfirm && pkt.LCI != 0 {
+				log.Printf("%s< NO_SESSION - Sending CLEAR to prevent kernel hang on LCI %d", tunSource, pkt.LCI)
+				clr := xot.CreateClearRequest(pkt.LCI, xot.CauseNetworkCongestion, 0)
+				WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
+			}
 		}
 		
 		// Handle disconnect header from TUN
 		if hdr == TunHeaderDisconnect {
-			// We could proactively clean up the session here if we wanted
+			log.Printf("%s: Received Disconnect from kernel - cleaning up all sessions", tunSource)
+			tg.closeAllSessions()
 		}
 	}
 }
@@ -591,14 +633,13 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	}
 
 	// Record session mapping
-	tg.mu.Lock()
-	if tg.connToLcis[conn] == nil {
-		tg.connToLcis[conn] = make(map[uint16]uint16)
+	s := &xot.Session{
+		LciA:  pkt.LCI,
+		LciB:  pkt.LCI,
+		ConnB: conn,
+		State: xot.StateP2,
 	}
-	// For outgoing calls, the LCI on the gateway connection is the same as on the TUN
-	tg.connToLcis[conn][pkt.LCI] = pkt.LCI
-	tg.tunToIncoming[pkt.LCI] = sessionInfo{conn, pkt.LCI}
-	tg.mu.Unlock()
+	tg.sm.AddSession(s)
 
 	go func() {
 		xot.ThreadStarts.Add("gateway_read_handler", 1)
@@ -612,7 +653,13 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	}
 	xot.CallsSent.Add("GWY", 1)
 	xot.BytesSent.Add("GWY", int64(len(pkt.Serialize())))
-	xot.SendXot(conn, pkt.Serialize())
+	if err := xot.SendXot(conn, pkt.Serialize()); err != nil {
+		log.Printf("Failed to send CALL_REQ to gateway: %v", err)
+		// cleanupConn will be called by the handleGatewayRead goroutine 
+		// when it sees the error or connection close, which will send CLEAR to TUN.
+		// But let's be explicit here too in case the goroutine hasn't started.
+		conn.Close() 
+	}
 }
 
 func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
@@ -652,15 +699,13 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 
 		// Remap LCI
 		incomingLCI := pkt.LCI
-		tg.mu.Lock()
-		tunLCI, ok := tg.connToLcis[conn][incomingLCI]
-		tg.mu.Unlock()
+		s := tg.sm.GetByBConnLCI(conn, incomingLCI)
 
-		if !ok {
+		if s == nil {
 			log.Printf("%s: No session for gateway LCI %d", source, incomingLCI)
 			continue
 		}
-		pkt.LCI = tunLCI
+		pkt.LCI = s.LciA
 
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v from gateway", source, err)
@@ -676,14 +721,16 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 
 		if pkt.GetBaseType() == xot.PktTypeCallConnected {
 			xot.CallsReceived.Add("GWY", 1)
+			s.SetState(xot.StateP4)
 		} else if pkt.GetBaseType() == xot.PktTypeClearRequest || pkt.GetBaseType() == xot.PktTypeClearConfirm {
-			log.Printf("%s: Call cleared on LCI %d (type: %s)", source, tunLCI, pkt.TypeName())
+			log.Printf("%s: Call cleared on LCI %d (type: %s)", source, s.LciA, pkt.TypeName())
 			if pkt.GetBaseType() == xot.PktTypeClearRequest && len(pkt.Payload) >= 1 {
 				xot.CausesReceived.Add(fmt.Sprintf("0x%02x", pkt.Payload[0]), 1)
 			}
 			// Forward to TUN before exiting
 			WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
 			xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
+			tg.sm.RemoveSession(s)
 			return
 		}
 		

@@ -27,10 +27,12 @@ var (
 	shuttingDown atomic.Bool
 	activeConns  sync.Map // net.Conn -> chan struct{} (stop channel)
 	wg           sync.WaitGroup
+	sm           *xot.SessionManager
 )
 
 func main() {
 	flag.Parse()
+	sm = xot.NewSessionManager(1, 4095)
 
 	if *statsPort > 0 {
 		xot.StartStatsServer(*statsPort)
@@ -189,7 +191,10 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		lci := pkt.LCI
 		called, calling, fac, _, err := pkt.ParseCallRequest()
 		if err != nil {
-			continue
+			log.Printf("%s: Malformed CALL_REQ from source: %v", source, err)
+			clr := xot.CreateClearRequest(lci, xot.CauseInvalidFacility, 0)
+			xot.SendXot(conn, clr.Serialize())
+			return
 		}
 		log.Printf("%s: CALL_REQ from %s to %s (fac: %s)", source, calling, called, xot.FormatFacilities(fac))
 
@@ -230,6 +235,12 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 			// Bidirectional relay
 			relayQuit := make(chan struct{})
+			var closeOnce sync.Once
+			closeRelay := func() {
+				closeOnce.Do(func() {
+					close(relayQuit)
+				})
+			}
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
 			
@@ -255,11 +266,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from %s: %v", source, destName, err)
 						}
-						select {
-						case <-relayQuit:
-						default:
-							close(relayQuit)
-						}
+						closeRelay()
 						return
 					}
 					xot.BytesReceived.Add(destName, int64(len(d)))
@@ -298,11 +305,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							// Forward the clear packet before exiting
 							xot.SendXot(conn, d)
 							xot.BytesSent.Add("XOT", int64(len(d)))
-							select {
-							case <-relayQuit:
-							default:
-								close(relayQuit)
-							}
+							closeRelay()
 							return
 						}
 						if *trace {
@@ -337,11 +340,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from source: %v", source, err)
 						}
-						select {
-						case <-relayQuit:
-						default:
-							close(relayQuit)
-						}
+						closeRelay()
 						return
 					}
 					xot.BytesReceived.Add("XOT", int64(len(d)))
@@ -377,11 +376,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							// Forward the clear packet before exiting
 							xot.SendXot(destConn, d)
 							xot.BytesSent.Add(destName, int64(len(d)))
-							select {
-							case <-relayQuit:
-							default:
-								close(relayQuit)
-							}
+							closeRelay()
 							return
 						}
 						if *trace {
