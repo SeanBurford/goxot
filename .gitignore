@@ -9,6 +9,9 @@
 *.dylib
 stress_test
 !stress_test/
+tun_close
+!tun_close/
+
 
 # Test binary, built with `go test -c`
 *.test
