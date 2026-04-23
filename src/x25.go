@@ -169,8 +169,8 @@ func (p *X25Packet) ParseCallRequest() (called, calling string, facilities []byt
 	}
 
 	addrLens := p.Payload[0]
-	calledLen := int(addrLens >> 4)
-	callingLen := int(addrLens & 0x0F)
+	callingLen := int(addrLens >> 4)
+	calledLen := int(addrLens & 0x0F)
 
 	offset := 1
 	totalAddrBytes := (calledLen + callingLen + 1) / 2
@@ -234,8 +234,8 @@ func (p *X25Packet) ParseCallConnected() (called, calling string, facilities []b
 	}
 
 	addrLens := p.Payload[0]
-	calledLen := int(addrLens >> 4)
-	callingLen := int(addrLens & 0x0F)
+	callingLen := int(addrLens >> 4)
+	calledLen := int(addrLens & 0x0F)
 
 	offset := 1
 	totalAddrBytes := (calledLen + callingLen + 1) / 2

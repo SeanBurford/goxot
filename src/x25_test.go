@@ -40,13 +40,101 @@ func TestSerializeX25(t *testing.T) {
 }
 
 func TestParseCallRequest(t *testing.T) {
-	// GFI=1, LCI=1, Type=CallRequest, AddrLens=0x21 (Called=2, Calling=1), Addrs=0x12, 0x30
-	data := []byte{0x10, 0x01, 0x0B, 0x21, 0x12, 0x30}
-	pkt, _ := ParseX25(data)
-	
-	called, calling, _, _, err := pkt.ParseCallRequest()
+	tests := []struct {
+		name            string
+		addrLens        byte
+		addrData        []byte
+		expectedCalled  string
+		expectedCalling string
+	}{
+		{
+			name:            "Standard 2-1",
+			addrLens:        0x12, // Calling=1, Called=2
+			addrData:        []byte{0x12, 0x30},
+			expectedCalled:  "12",
+			expectedCalling: "3",
+		},
+		{
+			name:            "Standard 3-2",
+			addrLens:        0x23, // Calling=2, Called=3
+			addrData:        []byte{0x12, 0x34, 0x50},
+			expectedCalled:  "123",
+			expectedCalling: "45",
+		},
+		{
+			name:            "Called zero length",
+			addrLens:        0x30, // Calling=3, Called=0
+			addrData:        []byte{0x12, 0x30},
+			expectedCalled:  "",
+			expectedCalling: "123",
+		},
+		{
+			name:            "Calling zero length",
+			addrLens:        0x03, // Calling=0, Called=3
+			addrData:        []byte{0x12, 0x30},
+			expectedCalled:  "123",
+			expectedCalling: "",
+		},
+		{
+			name:            "Max length 15-0",
+			addrLens:        0x0F, // Calling=0, Called=15
+			addrData:        []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x80},
+			expectedCalled:  "112233445566778",
+			expectedCalling: "",
+		},
+		{
+			name:            "Max length 0-15",
+			addrLens:        0xF0, // Calling=15, Called=0
+			addrData:        []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x80},
+			expectedCalled:  "",
+			expectedCalling: "112233445566778",
+		},
+		{
+			name:            "Both Max length 15-15",
+			addrLens:        0xFF, // Calling=15, Called=15
+			addrData:        []byte{
+				0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x81,
+				0x12, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78,
+			},
+			expectedCalled:  "112233445566778",
+			expectedCalling: "112233445566778",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := append([]byte{tt.addrLens}, tt.addrData...)
+			pkt := &X25Packet{
+				Type:    PktTypeCallRequest,
+				Payload: payload,
+			}
+
+			called, calling, _, _, err := pkt.ParseCallRequest()
+			if err != nil {
+				t.Fatalf("ParseCallRequest failed: %v", err)
+			}
+
+			if called != tt.expectedCalled {
+				t.Errorf("Expected called '%s', got '%s'", tt.expectedCalled, called)
+			}
+			if calling != tt.expectedCalling {
+				t.Errorf("Expected calling '%s', got '%s'", tt.expectedCalling, calling)
+			}
+		})
+	}
+}
+
+func TestParseCallConnected(t *testing.T) {
+	// Calling=1, Called=2
+	payload := []byte{0x12, 0x12, 0x30}
+	pkt := &X25Packet{
+		Type:    PktTypeCallConnected,
+		Payload: payload,
+	}
+
+	called, calling, _, _, err := pkt.ParseCallConnected()
 	if err != nil {
-		t.Fatalf("ParseCallRequest failed: %v", err)
+		t.Fatalf("ParseCallConnected failed: %v", err)
 	}
 
 	if called != "12" {
@@ -54,21 +142,6 @@ func TestParseCallRequest(t *testing.T) {
 	}
 	if calling != "3" {
 		t.Errorf("Expected calling '3', got '%s'", calling)
-	}
-
-	// Test with odd number of nibbles total
-	// AddrLens=0x32 (Called=3, Calling=2), Addrs=0x12, 0x34, 0x50
-	data2 := []byte{0x10, 0x01, 0x0B, 0x32, 0x12, 0x34, 0x50}
-	pkt2, _ := ParseX25(data2)
-	called2, calling2, _, _, err2 := pkt2.ParseCallRequest()
-	if err2 != nil {
-		t.Fatalf("ParseCallRequest failed: %v", err2)
-	}
-	if called2 != "123" {
-		t.Errorf("Expected called '123', got '%s'", called2)
-	}
-	if calling2 != "45" {
-		t.Errorf("Expected calling '45', got '%s'", calling2)
 	}
 }
 
