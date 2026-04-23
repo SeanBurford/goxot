@@ -1,11 +1,14 @@
 CC = gcc
 CFLAGS = -Wall -O2 -pthread
-TARGET = stress_test
+TARGETS = stress_test tun_close
 
-all: $(TARGET)
+all: $(TARGETS)
 
-$(TARGET): stress_test.c
-	$(CC) $(CFLAGS) -o $(TARGET) stress_test.c
+stress_test: stress_test.c
+	$(CC) $(CFLAGS) -o stress_test stress_test.c
+
+tun_close: tun_close.c
+	$(CC) $(CFLAGS) -o tun_close tun_close.c
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGETS)
