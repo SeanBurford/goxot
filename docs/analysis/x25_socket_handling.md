@@ -122,7 +122,7 @@ The only IOCTLs actually invoked are `SIOCADDRT`, `SIOCDELRT` (in tun-gateway), 
 
 **Reference**: `src/cmd/tun-gateway/main.go`, `src/cmd/tun-listener/main.go`
 
-**Status**: Fixed in `docs/tech/linux_x25_and_tun.md` (the updated version of that file corrects the table).
+**Status**: Resolved — corrected in `docs/tech/linux_x25_and_tun.md`.
 
 ---
 
@@ -169,7 +169,7 @@ struct x25_subscrip_struct {
 ```
 Both the `device` field size and the type of `global_facil_mask` were wrong.
 
-**Status**: Fixed in `docs/tech/linux_x25_and_tun.md`.
+**Status**: Resolved — corrected in `docs/tech/linux_x25_and_tun.md`.
 
 ---
 
@@ -183,4 +183,4 @@ Both the `device` field size and the type of `global_facil_mask` were wrong.
 
 The goxot tun-gateway handles this correctly (`handleTunRead` responds to `PktTypeRestartRequest`), but the documentation did not describe it.
 
-**Status**: Fixed in `docs/tech/linux_x25_and_tun.md` (Connect Handshake section updated, Low Level Operations added).
+**Status**: Resolved — Connect Handshake section and Low Level Operations added to `docs/tech/linux_x25_and_tun.md`.

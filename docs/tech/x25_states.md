@@ -34,8 +34,10 @@ GoXOT maintains state implicitly through its relay logic. For detailed implement
 3. **Data Relay**: While in **p4**, the gateway performs bidirectional relay of Data and Flow Control packets.
 4. **Clear Request**: Either party can initiate clearing. The gateway forwards the `CLR_REQ`, transitions to **p5**, and expects a `CLR_CONF` before returning the LCI to **p1**.
 
+> **Note on p3 (DCE Waiting)**: In the current transparent relay model, sessions never enter p3. Incoming CALL_REQs relayed to the Linux kernel are auto-accepted immediately via the kernel's `X25_ACCPT_APPRV_FLAG` default (`af_x25.c:1076–1083`), emitting CALL_ACCEPTED before user space is notified. Sessions transition directly from p1 to p4 on CALL_CONNECTED. p3 is a valid ITU X.25 state but has no code path that sets it in the current relay architecture; a manual-accept capability would require explicitly disabling `X25_ACCPT_APPRV_FLAG`.
+
 ### Special Handling: Restart
-When the Linux kernel (DCE side of our TUN) sends a `RESTART_REQ`, the `tun-gateway` immediately responds with a `RESTART_CONF`. This effectively clears all active virtual circuits on that interface and returns them to the **p1** (Ready) state.
+When the Linux kernel (DCE side of our TUN) sends a `RESTART_REQ`, the `tun-gateway` immediately responds with a `RESTART_CONF`. It does **not** clear active sessions from the session manager. The kernel frequently sends a startup RESTART_REQUEST even while a call setup is already in progress (startup flapping), so clearing sessions on every RESTART_CONF would cause spurious teardown of live circuits. Sessions remain in place; if the kernel has genuinely reset all virtual circuits (e.g., T20 timeout or state desynchronisation), subsequent packets relayed for stale LCIs will be silently discarded by the kernel.
 
 ## References
 * ITU-T Recommendation X.25 (10/96) - Section 4: "Procedures for packet layer communication".

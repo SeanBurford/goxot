@@ -72,6 +72,8 @@ This is acceptable behaviour for a transparent relay but the state documentation
 
 **Reference**: `session.go:15`, `main.go:109–118`, `af_x25.c:1076–1083`
 
+**Status**: Resolved — note added to `docs/tech/x25_states.md` clarifying that p3 is a valid ITU state but unreachable in the current relay model due to `X25_ACCPT_APPRV_FLAG` auto-accept.
+
 ---
 
 ## SESS004 — `cleanupConn` sends CLR_REQ for sessions regardless of state
@@ -129,7 +131,7 @@ The implementation does **not** clear sessions on RESTART_REQUEST (see SESS002).
 
 **Reference**: `docs/tech/x25_states.md:37–38`, `main.go:527–540`
 
-**Suggested fix**: Update `x25_states.md` to reflect that RESTART_CONFIRMATION is sent but sessions are **not** cleared by the gateway on RESTART_REQUEST, and explain the rationale (startup flapping avoidance).
+**Status**: Resolved — `docs/tech/x25_states.md` Special Handling: Restart section updated to reflect that RESTART_CONF is sent but sessions are not cleared, with rationale.
 
 ---
 
