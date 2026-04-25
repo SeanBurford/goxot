@@ -97,7 +97,7 @@ func handleConn(fd int, sa sockaddr_x25) {
 
 	// Query facilities
 	var fac x25_facilities
-	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCX25GFACILITIES, uintptr(unsafe.Pointer(&fac)))
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCX25GFACILITIES, uintptr(unsafe.Pointer(&fac)))
 	if errno == 0 {
 		fmt.Fprintf(f, "Facilities: WinIn=%d, WinOut=%d, PktIn=%d, PktOut=%d\r\n", fac.Winsize_in, fac.Winsize_out, 1 << fac.Psize_in, 1 << fac.Psize_out)
 	}

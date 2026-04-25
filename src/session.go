@@ -143,3 +143,17 @@ func (sm *SessionManager) GetAllSessions() []*Session {
 	}
 	return res
 }
+
+func (sm *SessionManager) RemoveAllSessions() []*Session {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	var res []*Session
+	for _, s := range sm.sessions {
+		res = append(res, s)
+	}
+	sm.sessions = make(map[string]*Session)
+	sm.byALCI = make(map[uint16]*Session)
+	sm.byBConnLCI = make(map[net.Conn]map[uint16]*Session)
+	return res
+}

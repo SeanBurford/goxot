@@ -105,25 +105,6 @@ int main(int argc, char *argv[]) {
     buf[9] = diag;
 
     int pos = 10;
-    if (!use_reset && (local_addr || remote_addr)) {
-        // Address Facility (Optional in Clear, but allowed)
-        int calling_len = local_addr ? strlen(local_addr) : 0;
-        int called_len = remote_addr ? strlen(remote_addr) : 0;
-        
-        // Calling length is high nibble, Called is low nibble
-        buf[pos++] = (calling_len << 4) | (called_len & 0x0F);
-        
-        // Semi-octet addresses: Called first, then Calling
-        int nibbles = 0;
-        if (remote_addr) {
-            nibbles = encode_bcd(remote_addr, &buf[pos], nibbles);
-        }
-        if (local_addr) {
-            nibbles = encode_bcd(local_addr, &buf[pos], nibbles);
-        }
-        pos += (nibbles + 1) / 2;
-    }
-
     if (write(fd, buf, pos) < 0) {
         perror("write to tun");
         close(fd);
@@ -132,11 +113,6 @@ int main(int argc, char *argv[]) {
 
     printf("Successfully injected %s (LCI=%d, Cause=0x%02X, Diag=0x%02X) into %s\n",
            use_reset ? "RESET" : "CLEAR", lci, cause, diag, dev);
-    if (local_addr || remote_addr) {
-        printf("  Address fields: Local=%s, Remote=%s\n", 
-               local_addr ? local_addr : "none", 
-               remote_addr ? remote_addr : "none");
-    }
 
     close(fd);
     return 0;

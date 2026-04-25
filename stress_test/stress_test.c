@@ -14,6 +14,8 @@
 #include <limits.h>
 #include <signal.h>
 
+static _Thread_local unsigned int thread_seed;
+
 #define X25_ADDR_LEN 16
 
 // Global statistics
@@ -148,6 +150,8 @@ void *sender_thread(void *arg) {
     long range = end_addr_val - start_addr_val + 1;
     if (range <= 0) range = 1;
 
+    thread_seed = (unsigned int)(time(NULL) ^ (unsigned long)pthread_self());
+
     struct timeval start_tv;
     gettimeofday(&start_tv, NULL);
 
@@ -156,7 +160,9 @@ void *sender_thread(void *arg) {
         struct timeval now_tv;
         gettimeofday(&now_tv, NULL);
         if (now_tv.tv_sec - start_tv.tv_sec >= cfg.run_time_s) break;
-        if (cfg.max_calls > 0 && atomic_load(&global_stats.calls_made) >= cfg.max_calls) break;
+
+        long slot = atomic_fetch_add(&global_stats.calls_made, 1);
+        if (cfg.max_calls > 0 && slot >= cfg.max_calls) break;
 
         char current_local[X25_ADDR_LEN];
         int seq = (int)(atomic_fetch_add(&local_addr_info.seq_num, 1) % 100000);
@@ -175,11 +181,17 @@ void *sender_thread(void *arg) {
         }
 
         struct timeval timeout;
-        timeout.tv_sec = 5;
+        timeout.tv_sec = 1;
         timeout.tv_usec = 0;
         if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
             atomic_fetch_add(&global_stats.setsockopt_error, 1);
             perror("setsockopt(SO_RCVTIMEO)");
+        }
+
+        int one = 1;
+        if (setsockopt(sock, SOL_X25, X25_QBITINCL, &one, sizeof(one)) < 0) {
+            atomic_fetch_add(&global_stats.setsockopt_error, 1);
+            perror("setsockopt(X25_QBITINCL)");
         }
 
         // Bind to generated local address
@@ -208,7 +220,7 @@ void *sender_thread(void *arg) {
             perror("ioctl(SIOCX25SFACILITIES)");
         }
 
-        long target_val = start_addr_val + (rand() % range);
+        long target_val = start_addr_val + (rand_r(&thread_seed) % range);
         char target_addr[X25_ADDR_LEN];
         snprintf(target_addr, sizeof(target_addr), "%ld", target_val);
 
@@ -217,7 +229,6 @@ void *sender_thread(void *arg) {
         raddr.sx25_family = AF_X25;
         snprintf(raddr.sx25_addr.x25_addr, sizeof(raddr.sx25_addr.x25_addr), "%s", target_addr);
 
-        atomic_fetch_add(&global_stats.calls_made, 1);
         if (connect(sock, (struct sockaddr *)&raddr, sizeof(raddr)) < 0) {
             atomic_fetch_add(&global_stats.calls_failed, 1);
             char prefix[128];
@@ -231,22 +242,17 @@ void *sender_thread(void *arg) {
         record_facilities(sock);
         
         int call_id = calls_count++;
-        int data_len = (rand() % cfg.buffer_size) + 1;
-        send_buf[0] = 0x00; // X.25 control byte: Data
+        int data_len = (rand_r(&thread_seed) % cfg.buffer_size) + 1;
+        send_buf[0] = 0x00; // X.25 control byte: Data (Q-bit = 0)
         fill_buffer(send_buf + 1, data_len, thread_id, call_id);
 
-        ssize_t sent = write(sock, send_buf, data_len + 1);
+        ssize_t sent = send(sock, send_buf, data_len + 1, MSG_EOR);
         if (sent > 0) {
             atomic_fetch_add(&global_stats.bytes_sent, sent - 1);
             atomic_fetch_add(&global_stats.packets_sent, 1);
             
-            int received = 0;
-            while (received < sent) {
-                ssize_t n = read(sock, recv_buf + received, sent - received);
-                if (n <= 0) break;
-                received += n;
-            }
-
+            ssize_t received = read(sock, recv_buf, cfg.buffer_size + 1);
+            
             if (received > 0) {
                 atomic_fetch_add(&global_stats.bytes_received, received - 1);
                 atomic_fetch_add(&global_stats.packets_received, 1);
@@ -255,7 +261,7 @@ void *sender_thread(void *arg) {
             if (received < sent) {
                 atomic_fetch_add(&global_stats.short_receive, 1);
                 atomic_fetch_add(&global_stats.data_mismatches, 1);
-                printf("Thread %d: Short receive between %s/%s: expected %d, got %d\n", thread_id, current_local, target_addr, (int)sent, received);
+                printf("Thread %d: Short receive between %s/%s: expected %ld, got %ld\n", thread_id, current_local, target_addr, sent, received);
             } else {
                 // Skip control byte (index 0) when comparing
                 for (int i = 1; i < sent; i++) {
@@ -289,6 +295,12 @@ void *handle_client(void *arg) {
     client_info_t *info = (client_info_t *)arg;
     int client_sock = info->client_sock;
     unsigned char *buf = malloc(cfg.buffer_size + 1);
+
+    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    int one = 1;
+    setsockopt(client_sock, SOL_X25, X25_QBITINCL, &one, sizeof(one));
     
     record_facilities(client_sock);
 
@@ -296,7 +308,7 @@ void *handle_client(void *arg) {
         ssize_t n = read(client_sock, buf, cfg.buffer_size + 1);
         if (n <= 0) break;
         
-        // The first byte is the X.25 control byte (usually 0x00 for data)
+        // The first byte is the X.25 Q-bit byte (prepended by kernel due to X25_QBITINCL)
         // We count only the actual user data
         ssize_t user_data_len = n - 1;
         if (user_data_len < 0) user_data_len = 0;
@@ -304,8 +316,8 @@ void *handle_client(void *arg) {
         atomic_fetch_add(&global_stats.bytes_received, user_data_len);
         atomic_fetch_add(&global_stats.packets_received, 1);
 
-        // Echo back (including the control byte)
-        ssize_t sent = write(client_sock, buf, n);
+        // Echo back (including the Q-bit byte) using MSG_EOR
+        ssize_t sent = send(client_sock, buf, n, MSG_EOR);
         if (sent > 0) {
             ssize_t sent_user_data = sent - 1;
             if (sent_user_data < 0) sent_user_data = 0;

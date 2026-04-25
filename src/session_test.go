@@ -55,3 +55,19 @@ func TestAddRemoveSession(t *testing.T) {
 		t.Errorf("Session still exists after removal")
 	}
 }
+
+func TestRemoveAllSessions(t *testing.T) {
+	sm := NewSessionManager(1, 10)
+	s1 := &Session{LciA: 1, LciB: 101}
+	s2 := &Session{LciA: 2, LciB: 102}
+	sm.AddSession(s1)
+	sm.AddSession(s2)
+
+	sessions := sm.RemoveAllSessions()
+	if len(sessions) != 2 {
+		t.Errorf("Expected 2 sessions, got %d", len(sessions))
+	}
+	if sm.GetByALCI(1) != nil || sm.GetByALCI(2) != nil {
+		t.Errorf("Sessions still exist in manager after RemoveAllSessions")
+	}
+}
