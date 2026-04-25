@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	xot "github.com/SeanBurford/goxot"
 )
 
 const (
@@ -91,7 +93,7 @@ func handleConn(fd int, sa sockaddr_x25) {
 	f := os.NewFile(uintptr(fd), "")
 	defer f.Close()
 
-	remoteAddr := strings.TrimRight(string(sa.Address.X25Addr[:]), "\x00")
+	remoteAddr := xot.X25AddrFromBytes(sa.Address.X25Addr[:])
 	log.Printf("Accepted connection from %s", remoteAddr)
 	fmt.Fprintf(f, "Welcome to tun-listener. Your address: %s\r\n", remoteAddr)
 
@@ -99,7 +101,7 @@ func handleConn(fd int, sa sockaddr_x25) {
 	var fac x25_facilities
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCX25GFACILITIES, uintptr(unsafe.Pointer(&fac)))
 	if errno == 0 {
-		fmt.Fprintf(f, "Facilities: WinIn=%d, WinOut=%d, PktIn=%d, PktOut=%d\r\n", fac.Winsize_in, fac.Winsize_out, 1 << fac.Psize_in, 1 << fac.Psize_out)
+		fmt.Fprintf(f, "Facilities: %s\r\n", xot.FormatX25FacilitiesRaw(fac.Winsize_in, fac.Winsize_out, fac.Psize_in, fac.Psize_out))
 	}
 
 	// Set read timeout for idle disconnection
