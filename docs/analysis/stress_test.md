@@ -43,6 +43,8 @@ ssize_t sent = send(sock, send_buf, data_len + 1, MSG_EOR);
 ssize_t sent = send(client_sock, buf, n, MSG_EOR);
 ```
 
+**Status**: Resolved — `write()` replaced with `send(..., MSG_EOR)` for both the sender and the echo server.
+
 ---
 
 ## STRESS002 — Leading byte misidentified as an X.25 control byte; `X25_QBITINCL` not enabled
@@ -74,6 +76,8 @@ int one = 1;
 setsockopt(sock, SOL_X25, X25_QBITINCL, &one, sizeof(one));
 ```
 or remove the leading control byte and treat all buffer bytes as user data, starting the mismatch check at `i = 0`.
+
+**Status**: Resolved — `X25_QBITINCL` enabled on both sender and accepted client sockets via `setsockopt`; comments updated from "X.25 control byte" to "Q-bit byte"; byte accounting is now correct.
 
 ---
 
@@ -108,6 +112,8 @@ ssize_t received = read(sock, recv_buf, cfg.buffer_size + 1);
 ```
 If multi-packet echoes are expected, use `recvmsg()` and loop on `MSG_EOR`.
 
+**Status**: Resolved — read accumulation loop replaced with a single `read()` call into the full buffer.
+
 ---
 
 ## STRESS004 — Receiver threads block indefinitely; no read timeout on accepted sockets
@@ -141,6 +147,8 @@ struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
 setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 ```
 
+**Status**: Resolved — `SO_RCVTIMEO` set to 30 s on accepted client sockets at the start of `handle_client`.
+
 ---
 
 ## STRESS005 — `rand()` is not thread-safe; data race on global PRNG state
@@ -165,6 +173,8 @@ long target_val = start_addr_val + (rand() % range);
 unsigned int seed = (unsigned int)(time(NULL) ^ pthread_self());
 long target_val = start_addr_val + (rand_r(&seed) % range);
 ```
+
+**Status**: Resolved — `rand()` replaced with `rand_r()` using a `_Thread_local` per-thread seed initialised from `time(NULL) ^ (unsigned long)pthread_self()` at thread start.
 
 ---
 
@@ -193,6 +203,8 @@ long slot = atomic_fetch_add(&global_stats.calls_made, 1);
 if (cfg.max_calls > 0 && slot >= cfg.max_calls) break;
 ```
 
+**Status**: Resolved — `calls_made` is now incremented atomically before `connect()`; the returned slot index is the stop condition, making `max_calls` a hard upper bound per-thread.
+
 ---
 
 ## STRESS007 — tun_close.c cannot attach to a TUN device already held open by tun-gateway
@@ -218,6 +230,8 @@ The tool is only usable after tun-gateway has exited (leaving a stuck kernel soc
 **Reference**: `tun_close.c:83–87`, Linux `drivers/net/tun.c` (TUNSETIFF EBUSY logic)
 
 **Recommendation**: Document this limitation clearly in the usage message. To clear a stuck LCI on a running tun-gateway, the correct approach is to send a `CLEAR_REQUEST` via the tun-gateway's own write path (e.g., via the Unix domain socket protocol), not by injecting directly into the TUN fd. Alternatively, build tun-gateway with a management API to inject arbitrary TUN frames.
+
+**Status**: Resolved — `usage()` updated to document the `EBUSY` limitation and recommend using tun-gateway's management socket instead. Dead `local_addr`/`remote_addr` parameters (left over after STRESS008 fix) also removed.
 
 ---
 
@@ -257,6 +271,8 @@ Only `skb->data[3]` (cause) and `skb->data[4]` (diagnostic) are read; additional
 
 **Fix**: Remove the address-injection block and its misleading comment, or add a note that the bytes are non-standard and ignored by the Linux kernel.
 
+**Status**: Resolved — non-standard address injection block and its misleading comment removed.
+
 ---
 
 ## STRESS009 — tun_close.c injection silently discarded for sockets in X25_STATE_0 or X25_STATE_2
@@ -281,6 +297,8 @@ For sockets stuck in `X25_STATE_1` (Awaiting Call Accepted) or `X25_STATE_3` (Da
 **Reference**: `x25_in.c:419–422`, `x25_in.c:175–200`, `x25_in.c:87–167`
 
 **Recommendation**: Add a diagnostic note in the usage output indicating which kernel states the tool is effective against, and that a "successfully injected" message only confirms the write to the TUN fd, not that the kernel processed it.
+
+**Status**: Resolved — `usage()` updated with a note that "Successfully injected" confirms only the TUN fd write, not kernel processing; the usage message now documents which kernel socket states the injection is effective against.
 
 ---
 

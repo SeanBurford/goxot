@@ -25,6 +25,8 @@ The extra bytes read by the kernel are ignored, but the behaviour is technically
 
 **Suggested fix**: Define `Device [192]byte` (or use `[200-8]byte` on 64-bit) to match the kernel struct exactly, and zero-fill when setting the interface name.
 
+**Status**: Resolved — `Device` field corrected to `[192]byte` in `x25_route_struct`; `x25_subscrip_struct` also added with the correct field sizes.
+
 ---
 
 ## SOCK002 — `SIOCX25GCAUSEDIAG` constant value incorrect
@@ -45,6 +47,8 @@ The constant is defined but never passed to `ioctl()` in the current tun-gateway
 
 **Suggested fix**: Change to `SIOCX25GCAUSEDIAG = 0x89E8`.
 
+**Status**: Resolved — the constant was never called via `ioctl()`; the incorrect dead declaration was removed. Removing dead code with a wrong value is equivalent to the suggested fix.
+
 ---
 
 ## SOCK003 — tun-listener IOCTL constants incorrect
@@ -64,6 +68,8 @@ The constant is defined but never passed to `ioctl()` in the current tun-gateway
 **Suggested fix**:
 - Change `SIOCX25GCALLUSERDATA` to `0x89E6`.
 - Remove or comment out the `0x89E5` LCI query; there is no supported IOCTL for this. Use `/proc/net/x25` or pass the LCI through the application if needed.
+
+**Status**: Resolved — `SIOCX25GCALLUSERDATA` constant and the unsupported `0x89E5` LCI query both removed from tun-listener.
 
 ---
 
@@ -105,6 +111,8 @@ if len(payload) == 0 {
 }
 ```
 
+**Status**: Resolved — `TunHeaderDisconnect` is now handled inside the empty-payload branch with `linkState` reset to `LinkStateDown` and `closeAllSessions()` called.
+
 ---
 
 ## SOCK005 — "Used by GoXOT" IOCTL table inaccurate in documentation
@@ -142,6 +150,8 @@ Sending `TunHeaderDisconnect (0x02)` before closing the fd ensures the kernel ca
 ```go
 WriteTun(ifce, TunHeaderDisconnect, nil)
 ```
+
+**Status**: Resolved — signal handler now calls `closeAllSessions()`, writes `TunHeaderDisconnect` to TUN, explicitly closes the TUN fd (triggering `NETDEV_DOWN`), and removes the Unix socket file before exiting.
 
 ---
 

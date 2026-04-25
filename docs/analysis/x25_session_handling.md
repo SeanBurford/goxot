@@ -38,6 +38,8 @@ handleTunRead receives CLR_CONF
   → RemoveSession
 ```
 
+**Status**: Resolved — `handleServerConn` and `handleGatewayRead` now mark the session `StateP5` after forwarding a remote CLR_REQ, without calling `RemoveSession`. The loop continues rather than returning. `RemoveSession` is only called after `handleTunRead` receives the kernel's CLR_CONF, forwards it to the remote peer, and then cleans up.
+
 ---
 
 ## SESS002 — RESTART_REQUEST from kernel during active calls treated as decorative
@@ -55,6 +57,12 @@ The risk is: if the kernel sends a genuine `RESTART_REQUEST` (e.g., state desync
 This is a deliberate trade-off to avoid false session teardown on startup flapping. The correct long-term fix would be to distinguish a genuine restart from a startup restart, or to implement a heartbeat mechanism.
 
 **Reference**: `main.go:527–540`, `x25_link.c:64–127` (x25_link_control RESTART handling)
+
+**Status**: Partially resolved — `handleTunRead` now tracks `linkState`. When a `RESTART_REQUEST` is received while already in `LinkStateOperational`:
+- If active sessions exist, it is treated as a genuine restart: `closeAllSessions()` is called before sending `RESTART_CONFIRMATION`.
+- If no sessions are active, it is treated as a startup-flapping duplicate and silently dropped (no `RESTART_CONFIRMATION` sent, no state change).
+
+This heuristic is imperfect: a genuine restart that arrives before any sessions are established will still be treated as decorative. A heartbeat mechanism would be needed to close this gap.
 
 ---
 
@@ -99,6 +107,8 @@ The only wasted packets are for `StateP1` sessions (no kernel state). The rest a
 
 **Reference**: `main.go:120–132`, `x25_in.c:149–155` (state1_machine CLR_REQ handling)
 
+**Status**: Resolved — `cleanupConn` now skips sending CLR_REQ for sessions in `StateP1` (no kernel socket exists for those LCIs). Sessions in all other states still receive a CLR_REQ to drive the kernel state machine to completion.
+
 ---
 
 ## SESS005 — Race condition in `closeAllSessions`
@@ -114,6 +124,8 @@ A more serious race: if two goroutines both reach `closeAllSessions` concurrentl
 **Reference**: `main.go:140–151`, `session.go:136–145`
 
 **Suggested fix**: Hold the mutex across the entire close operation, or use a "closing" atomic flag to prevent double execution.
+
+**Status**: Resolved — `closeAllSessions` now calls `sm.RemoveAllSessions()`, which holds the mutex for the full removal, atomically clearing the session map and returning the snapshot in one operation. New sessions cannot be inserted between the snapshot and the cleanup. The signal handler sets `shuttingDown` and closes the XOT listener before calling `closeAllSessions`, preventing new sessions from being added concurrently (see COMPAT009).
 
 ---
 
@@ -153,6 +165,8 @@ return
 
 **Reference**: `main.go:700–734`
 
+**Status**: Resolved — `handleGatewayRead` now sets the session to `StateP5` and continues the loop after forwarding a CLR_REQ to TUN; `RemoveSession` is only called after the CLR_CONF is forwarded (consistent with the SESS001 fix). The ordering hazard is eliminated.
+
 ---
 
 ## SESS008 — `xot-server` session manager LCI range overlaps with kernel's range
@@ -173,6 +187,8 @@ In contrast, `tun-gateway` uses a `SessionManager` with a configurable range (de
 
 **Reference**: `src/cmd/xot-server/main.go:35`, `src/cmd/tun-gateway/main.go:329–332`, `af_x25.c:336–361` (x25_new_lci)
 
+**Status**: Resolved — dead `sm` variable and `xot.NewSessionManager(1, 4095)` call removed from `xot-server/main.go`.
+
 ---
 
 ## SESS009 — Session cleanup on `TunHeaderDisconnect` does not await CLR_CONF before teardown
@@ -186,3 +202,5 @@ In contrast, `tun-gateway` uses a `SessionManager` with a configurable range (de
 For RFC 1613 over TCP, this is generally acceptable — the TCP connection closure itself signals the end of the XOT session. For applications that strictly enforce X.25 state machines, the missing CLR_CONF may trigger error logging.
 
 **Reference**: `main.go:140–151`, RFC 1613 Section 3.1
+
+**Status**: Accepted — forced teardown over RFC 1613 TCP; TCP connection closure is the authoritative end-of-session signal, and awaiting individual CLR_CONFs during a full link teardown would provide no practical benefit.

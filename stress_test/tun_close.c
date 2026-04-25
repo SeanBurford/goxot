@@ -17,15 +17,29 @@
 #define PROTO_X25_PLP 0x0805
 
 void usage(const char *prog) {
-    fprintf(stderr, "Usage: %s [-D dev] [-R] [-c cause] [-d diag] <lci> [local_addr] [remote_addr]\n", prog);
+    fprintf(stderr, "Usage: %s [-D dev] [-R] [-c cause] [-d diag] <lci>\n", prog);
     fprintf(stderr, "  -D dev    TUN device (default: tun0)\n");
     fprintf(stderr, "  -R        Send RESET REQUEST (0x1B) instead of CLEAR REQUEST (0x13)\n");
     fprintf(stderr, "  -c cause  Cause code (default: 0x00)\n");
     fprintf(stderr, "  -d diag   Diagnostic code (default: 0x00)\n");
+    fprintf(stderr, "\nIMPORTANT LIMITATION (STRESS007):\n");
+    fprintf(stderr, "  This tool opens /dev/net/tun and attaches to the named device via TUNSETIFF.\n");
+    fprintf(stderr, "  For a single-queue TUN device, only one fd can be attached at a time.\n");
+    fprintf(stderr, "  If tun-gateway is running and holds the TUN fd open, TUNSETIFF returns EBUSY\n");
+    fprintf(stderr, "  and this tool cannot inject anything.\n");
+    fprintf(stderr, "  Use this tool ONLY after tun-gateway has exited (e.g. to clear a stuck kernel\n");
+    fprintf(stderr, "  socket). To clear an LCI on a live tun-gateway, use its management socket\n");
+    fprintf(stderr, "  or restart the gateway.\n");
+    fprintf(stderr, "\nNOTE on success message (STRESS009):\n");
+    fprintf(stderr, "  'Successfully injected' confirms only that the write to the TUN fd succeeded.\n");
+    fprintf(stderr, "  Whether the kernel acts on the packet depends on the socket state:\n");
+    fprintf(stderr, "    X25_STATE_1 (Awaiting Call Accepted): CLEAR REQUEST fully processed.\n");
+    fprintf(stderr, "    X25_STATE_3 (Data Transfer): CLEAR REQUEST fully processed.\n");
+    fprintf(stderr, "    X25_STATE_2 (Awaiting Clear Confirm): Accelerates T23 expiry; harmless.\n");
+    fprintf(stderr, "    X25_STATE_0 (Ready/Disconnected): Packet silently discarded by kernel.\n");
     fprintf(stderr, "\nExamples:\n");
-    fprintf(stderr, "  %s 5                       # Send Clear to LCI 5\n", prog);
-    fprintf(stderr, "  %s -R 10                   # Send Reset to LCI 10\n", prog);
-    fprintf(stderr, "  %s 5 12711084 127800       # Send Clear with addresses\n", prog);
+    fprintf(stderr, "  %s 5        # Send Clear to LCI 5\n", prog);
+    fprintf(stderr, "  %s -R 10   # Send Reset to LCI 10\n", prog);
     exit(1);
 }
 
@@ -65,8 +79,6 @@ int main(int argc, char *argv[]) {
     if (optind >= argc) usage(argv[0]);
 
     int lci = atoi(argv[optind++]);
-    char *local_addr = (optind < argc) ? argv[optind++] : NULL;
-    char *remote_addr = (optind < argc) ? argv[optind++] : NULL;
 
     int fd = open("/dev/net/tun", O_RDWR);
     if (fd < 0) {

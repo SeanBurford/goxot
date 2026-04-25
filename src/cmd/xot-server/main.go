@@ -27,12 +27,10 @@ var (
 	shuttingDown atomic.Bool
 	activeConns  sync.Map // net.Conn -> chan struct{} (stop channel)
 	wg           sync.WaitGroup
-	sm           *xot.SessionManager
 )
 
 func main() {
 	flag.Parse()
-	sm = xot.NewSessionManager(1, 4095)
 
 	if *statsPort > 0 {
 		xot.StartStatsServer(*statsPort)

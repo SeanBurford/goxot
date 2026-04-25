@@ -110,6 +110,8 @@ All CALL\_REQUESTs (from `connect()`), CALL\_ACCEPTEDs (for inbound calls), CLR\
 
 **Workaround**: Send `TunHeaderConnect` proactively to TUN immediately after Op1 step 4 (SIOCSIFFLAGS). The kernel receives `X25_IFACE_CONNECT` → `x25_link_established()` → STATE\_2 → sends RESTART\_REQUEST. Complete the RESTART handshake before forwarding any XOT CALL\_REQs to TUN. This pre-establishes STATE\_3 without waiting for an AF\_X25 socket to trigger it.
 
+**Status**: Partially resolved — tun-gateway proactively writes `TunHeaderConnect` on startup and tracks `linkState` atomically. Packets from XOT peers are rejected with a CLR\_REQ when `linkState != LinkStateOperational`, preventing data from being forwarded before STATE\_3 is established. The kernel-side asymmetry (inbound CALL\_REQs written to TUN are accepted regardless of link state) remains; the gateway's proactive connect ensures STATE\_3 is reached quickly on startup.
+
 ---
 
 ### COMPAT004 — Duplicate RESTART\_CONFIRMATION in STATE\_3 kills all active sockets
@@ -144,6 +146,8 @@ If the kernel receives a `RESTART_CONFIRMATION` while already in `STATE_3`, it k
 
 **Workaround**: Maintain a gateway-side link state variable. Accept only one `RESTART_REQUEST` → `RESTART_CONFIRMATION` exchange per link establishment cycle. After the link reaches STATE\_3 (gateway's view), treat any subsequent `RESTART_REQUEST` read from TUN as a genuine restart event (COMPAT005 path) rather than a continuation of the current handshake.
 
+**Status**: Resolved — `handleTunRead` tracks `linkState`. When a `RESTART_REQUEST` is received while `linkState == LinkStateOperational` and no active sessions exist, it is silently discarded rather than generating a `RESTART_CONFIRMATION`. This prevents the duplicate-CONF → kill-all-sockets → back-to-STATE\_2 cycle.
+
 ---
 
 ### COMPAT005 — RESTART\_REQUEST during STATE\_3 kills all active sockets without gateway session cleanup
@@ -170,6 +174,8 @@ This is documented as SESS002 but has a direct compatibility impact: Op2/Op3/Op4
 **Classification**: Kernel behavior is correct per X.25. The user-mode issue (SESS002) is the gateway not clearing sessions on RESTART.
 
 **Workaround**: In the TUN reader, when a `RESTART_REQUEST` is received while the gateway considers the link already operational (STATE\_3 from its perspective), treat it as a full restart: clear all active sessions (sending CLR\_REQ to each remote XOT peer), then send `RESTART_CONFIRMATION`. Distinguish startup flapping (RESTART\_REQUEST received immediately after link came up, before any sessions were established) from a genuine mid-session restart by checking whether any sessions are active.
+
+**Status**: Partially resolved — when a `RESTART_REQUEST` is received in `LinkStateOperational` with active sessions, `closeAllSessions()` is called before sending `RESTART_CONFIRMATION`. When no sessions are active, the `RESTART_REQUEST` is discarded (COMPAT004 path). The heuristic is imperfect: a genuine restart that arrives before any sessions are established is still treated as decorative. See SESS002 for details.
 
 ---
 
@@ -208,6 +214,8 @@ When the gateway then writes the CALL\_REQ with that LCI, `x25_receive_data()` f
 
 **Workaround**: Use `SIOCX25SSUBSCRIP` to set a `global_facil_mask` that limits which LCIs the kernel uses for socket operations, and partition the LCI space. Alternatively, design the gateway so that either all calls are kernel-side (AF\_X25 sockets only) or all calls are gateway-injected (CALL\_REQs written to TUN), never both on the same interface.
 
+**Status**: Partially resolved — default `TunConfig` LCI range changed from 1–255 to 1024–4095. `SIOCX25SSUBSCRIP` is called on startup with `Extended=1` to allow the extended LCI range. The kernel's AF\_X25 `x25_new_lci()` allocator starts from LCI 1 and is unlikely to reach 1024 in practice, giving an effective LCI partition. True kernel-enforced reservation of the 1024–4095 range for gateway use is not supported by the Linux X.25 subsystem.
+
 ---
 
 ### COMPAT007 — Simultaneous local close and remote close produce an unforwarded CLR\_CONF
@@ -230,6 +238,8 @@ Per X.25, the remote peer sent CLR\_REQ and is waiting for CLR\_CONF (now in X25
 
 **Workaround**: Do not remove the session immediately when forwarding a remote CLR\_REQ to TUN. Instead, mark it as "awaiting CLR\_CONF" (StateP5 equivalent) and keep it in the manager until the corresponding CLR\_CONF is read from TUN and forwarded to the remote peer. Only then call `RemoveSession`.
 
+**Status**: Resolved — via SESS001 fix. Sessions are retained in `StateP5` after forwarding a remote CLR\_REQ; `RemoveSession` is only called after `handleTunRead` receives the kernel's CLR\_CONF, forwards it to the remote peer, and then removes the session. The remote peer receives CLR\_CONF and completes its three-way clearing handshake.
+
 ---
 
 ### COMPAT008 — Link teardown during call setup leaves StateP2 sessions unmanaged
@@ -248,6 +258,8 @@ Additionally: `x25_release()` (`af_x25.c:656–668`) sends CLR\_REQ for sockets 
 
 **Workaround**: Insert the session into the manager before writing the CALL\_REQ to TUN. This ensures `closeAllSessions()` always sees the session and sends CLR\_REQ to the remote peer, even if the kernel side is already dead. In the XOT handler, add session-null guard after `closeAllSessions()` returns to handle the race where the session was removed mid-flight.
 
+**Status**: Partially resolved — a session-null guard is now present in `handleServerConn` to handle the race where a session is removed mid-flight. The pre-manager window race (session allocated in `getTunLCI` but not yet written to TUN before `closeAllSessions` runs) is not fully closed; a remote XOT peer's CALL\_REQUEST in this window will not receive a CLR\_REQ notification.
+
 ---
 
 ### COMPAT009 — Shutdown (Op6) races with new sessions arriving concurrently
@@ -265,6 +277,8 @@ A second instance of the same race: if the signal handler and `handleTunRead`'s 
 **Classification**: User-mode code race. SESS005 documents the concurrent-close variant.
 
 **Workaround**: Set a shutdown flag (atomic boolean) before entering Op6 step 1. XOT handler goroutines check this flag before allocating new sessions and refuse new calls when it is set. Additionally, close the XOT listening socket before calling `closeAllSessions()` to prevent new XOT connections from being accepted during the shutdown window.
+
+**Status**: Resolved — the signal handler atomically sets `shuttingDown = 1` and closes the XOT listener before calling `closeAllSessions()`. `handleServerConn` checks `shuttingDown` before processing new packets. `closeAllSessions` uses `RemoveAllSessions()` which atomically removes all sessions under the mutex, preventing new additions racing with the snapshot (see SESS005).
 
 ---
 
@@ -301,6 +315,8 @@ SOCK006 recommends writing `TunHeaderDisconnect` before `close()`. The NETDEV\_D
 
 **Classification**: Kernel behavior that partially mitigates SOCK006. SOCK006 remains a good practice recommendation.
 
+**Status**: Informational — SOCK006 fix (explicit `TunHeaderDisconnect` before exit) provides a deterministic, ordered cleanup point. The `NETDEV_DOWN` path remains as a kernel-enforced safety net.
+
 ---
 
 ### COMPAT011 — Multiple gateways on the same machine share the X.25 route table
@@ -316,6 +332,8 @@ Additionally, Op1 step 5 and Op2 step 4 in separate processes are not sequenced.
 **Classification**: Configuration and deployment issue. Not a kernel bug.
 
 **Workaround**: Assign non-overlapping X.25 address prefixes to different gateway instances. Use `SIOCX25SSUBSCRIP` on each interface to set distinct LCI ranges, preventing cross-contamination if both interfaces happen to be used by the same AF\_X25 application. Document the address partitioning scheme in operational runbooks.
+
+**Status**: Configuration issue — no code change required. Operational deployments should assign non-overlapping X.25 address prefixes to each gateway instance.
 
 ---
 
