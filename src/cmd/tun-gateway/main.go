@@ -37,7 +37,6 @@ const (
 	SIOCGIFFLAGS     = 0x8913
 	SIOCADDRT         = 0x890B
 	SIOCDELRT         = 0x890C
-	SIOCX25GCAUSEDIAG = 0x89E4
 	IFF_UP            = 0x1
 	IFF_RUNNING      = 0x40
 	IFF_TUN          = 0x0001

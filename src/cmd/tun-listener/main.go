@@ -15,7 +15,6 @@ const (
 	AF_X25               = 9
 	SOCK_SEQPACKET       = 5
 	SIOCX25GFACILITIES   = 0x89E2
-	SIOCX25GCALLUSERDATA = 0x89E3
 )
 
 type x25_address struct {
@@ -95,13 +94,6 @@ func handleConn(fd int, sa sockaddr_x25) {
 	remoteAddr := strings.TrimRight(string(sa.Address.X25Addr[:]), "\x00")
 	log.Printf("Accepted connection from %s", remoteAddr)
 	fmt.Fprintf(f, "Welcome to tun-listener. Your address: %s\r\n", remoteAddr)
-
-	// Query LCI
-	var lci uint16
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), 0x89E5, uintptr(unsafe.Pointer(&lci)))
-	if errno == 0 {
-		fmt.Fprintf(f, "LCI: %d\r\n", lci)
-	}
 
 	// Query facilities
 	var fac x25_facilities

@@ -47,22 +47,9 @@ The kernel maintains an internal link state for each neighbor device (`x25_link.
 
 #### Observed Behaviours
 
-A critical observed behaviour in the Linux X.25 implementation over TUN is the requirement for the DTE (Gateway) to explicitly respond to the `TunHeaderConnect (0x01)` handshake followed by the RESTART handshake.
-
-When the kernel initializes an X.25 association or prepares to transmit data (often triggered by routing a call or binding a socket to the interface), it may issue a `TunHeaderConnect` with an empty payload. The gateway **must** respond with an identical `TunHeaderConnect` packet to the kernel. Failure to provide this acknowledgement prevents the kernel from transitioning the interface to a synchronized state, blocking subsequent data transfer.
-
 Additionally, the gateway must manage session state based on X.25 Control Packets:
 *   **Session Cleanup**: Upon receiving a `PktTypeClearRequest` from the TUN interface, the gateway must remove the associated LCI mapping to free resources and prevent state desynchronization.
 *   **Interface Shutdown**: Receipt of a `TunHeaderDisconnect (0x02)` (with empty payload) signals a link-layer teardown, and the gateway should immediately close all active sessions associated with that interface. The kernel has already terminated all sockets internally; no CLR_REQ echo to the kernel is needed.
-
-This requirement is handled in `tun-gateway` within the `handleTunRead` loop:
-```go
-if hdr == TunHeaderConnect {
-    WriteTun(tg.ifce, TunHeaderConnect, nil)
-} else if hdr == TunHeaderDisconnect {
-    tg.closeAllSessions()
-}
-```
 
 ## Linux X.25 IOCTLs
 
