@@ -55,7 +55,7 @@ func TestXotFraming(t *testing.T) {
 	}
 
 	// Test SendXot
-	err := SendXot(m, data)
+	err := SendXot("test", m, data)
 	if err != nil {
 		t.Fatalf("SendXot failed: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestXotFraming(t *testing.T) {
 
 	// Test ReadXot
 	m.readBuf.Write(expected)
-	readData, err := ReadXot(m)
+	readData, err := ReadXot("test", m)
 	if err != nil {
 		t.Fatalf("ReadXot failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestReadXotShortHeader(t *testing.T) {
 	m := &mockConn{
 		readBuf: bytes.NewBuffer([]byte{0x00, 0x00, 0x00}), // Only 3 bytes
 	}
-	_, err := ReadXot(m)
+	_, err := ReadXot("test", m)
 	if err == nil {
 		t.Errorf("Expected error for short header")
 	}
@@ -95,7 +95,7 @@ func TestReadXotOversized(t *testing.T) {
 	header := []byte{0x00, 0x00, 0x13, 0x88} // 0x1388 = 5000
 	m.readBuf.Write(header)
 	
-	_, err := ReadXot(m)
+	_, err := ReadXot("test", m)
 	if err == nil {
 		t.Errorf("Expected error for oversized packet")
 	}
@@ -115,7 +115,7 @@ func TestReadXotVersionMismatch(t *testing.T) {
 		client.Write(data)
 	}()
 
-	_, err := ReadXot(server)
+	_, err := ReadXot("test", server)
 	if err == nil {
 		t.Error("Expected error for bad XOT version")
 	}
@@ -137,7 +137,7 @@ func TestReadXotStreamLengthMismatch(t *testing.T) {
 		client.Close() // close to trigger EOF
 	}()
 
-	_, err := ReadXot(server)
+	_, err := ReadXot("test", server)
 	if err == nil {
 		t.Error("Expected error for length mismatch")
 	}
@@ -156,10 +156,10 @@ func TestSendXotThenReadLarge(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- SendXot(client, payload)
+		errCh <- SendXot("test", client, payload)
 	}()
 
-	got, err := ReadXot(server)
+	got, err := ReadXot("test", server)
 	if err != nil {
 		t.Fatalf("ReadXot failed: %v", err)
 	}

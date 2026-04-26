@@ -31,10 +31,21 @@ func isPacketConn(conn net.Conn) bool {
 	return network == "unixpacket"
 }
 
-// SendXot sends an X.25 packet over a TCP connection with RFC 1613 framing
-func SendXot(conn net.Conn, data []byte) error {
-	length := uint16(len(data))
+func updateCallRequestCount(ifname string, data []byte) {
+	if len(data) >= 3 {
+		if data[2] == PktTypeCallRequest {
+			InterfaceCallRequest.Add(ifname, 1)
+		}
+		if data[2] == PktTypeCallConnected {
+			InterfaceCallConnected.Add(ifname, 1)
+		}
+	}
+}
 
+// SendXot sends an X.25 packet over a TCP connection with RFC 1613 framing
+func SendXot(ifname string, conn net.Conn, data []byte) error {
+	length := uint16(len(data))
+	updateCallRequestCount(ifname, data)
 	// For packet-oriented sockets, we MUST send in a single Write.
 	// We also use a single write for small packets on stream sockets to reduce syscalls.
 	if isPacketConn(conn) || length < 4096 {
@@ -44,7 +55,11 @@ func SendXot(conn net.Conn, data []byte) error {
 		binary.BigEndian.PutUint16(buf[0:2], XotVersion)
 		binary.BigEndian.PutUint16(buf[2:4], length)
 		copy(buf[4:], data)
-		_, err := conn.Write(buf[0 : 4+length])
+		n, err := conn.Write(buf[0 : 4+length])
+		if err == nil {
+			InterfacePacketsSent.Add(ifname, 1)
+			InterfaceBytesSent.Add(ifname, int64(n))
+		}
 		return err
 	}
 
@@ -58,12 +73,16 @@ func SendXot(conn net.Conn, data []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = conn.Write(data)
+	n, err := conn.Write(data)
+	if err == nil {
+		InterfacePacketsSent.Add(ifname, 1)
+		InterfaceBytesSent.Add(ifname, int64(n))
+	}
 	return err
 }
 
 // ReadXot reads an X.25 packet from a TCP connection with RFC 1613 framing
-func ReadXot(conn net.Conn) ([]byte, error) {
+func ReadXot(ifname string, conn net.Conn) ([]byte, error) {
 	if isPacketConn(conn) {
 		buf := bufferPool.Get().([]byte)
 		defer bufferPool.Put(buf)
@@ -75,6 +94,8 @@ func ReadXot(conn net.Conn) ([]byte, error) {
 		if n < 4 {
 			return nil, io.ErrUnexpectedEOF
 		}
+		InterfacePacketsReceived.Add(ifname, 1)
+		InterfaceBytesReceived.Add(ifname, int64(n))
 
 		version := binary.BigEndian.Uint16(buf[0:2])
 		if version != XotVersion {
@@ -93,16 +114,24 @@ func ReadXot(conn net.Conn) ([]byte, error) {
 
 		res := make([]byte, length)
 		copy(res, buf[4:n])
+
+		updateCallRequestCount(ifname, res)
 		return res, nil
 	}
 
 	header := headerPool.Get().([]byte)
 	defer headerPool.Put(header)
 
-	_, err := io.ReadFull(conn, header)
+	n, err := io.ReadFull(conn, header)
 	if err != nil {
 		return nil, err
 	}
+
+	if n < 4 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	InterfacePacketsReceived.Add(ifname, 1)
+	InterfaceBytesReceived.Add(ifname, int64(n))
 
 	version := binary.BigEndian.Uint16(header[0:2])
 	if version != XotVersion {
@@ -121,6 +150,7 @@ func ReadXot(conn net.Conn) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	updateCallRequestCount(ifname, data)
 
 	return data, nil
 }

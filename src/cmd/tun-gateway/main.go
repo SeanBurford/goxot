@@ -167,7 +167,7 @@ func (tg *TunGateway) closeAllSessions() {
 		// Forward CLEAR to gateway side
 		if s.ConnB != nil {
 			clr := xot.CreateClearRequest(s.LciB, xot.CauseNetworkCongestion, 0)
-			xot.SendXot(s.ConnB, clr.Serialize())
+			xot.SendXot("xot", s.ConnB, clr.Serialize())
 			// Note: SESS005: We don't remove session again here as it's already removed
 		}
 	}
@@ -325,6 +325,8 @@ func ReadTun(ifce *TunInterface) (byte, []byte, error) {
 		if n < 5 {
 			continue
 		}
+		xot.InterfacePacketsReceived.Add("tun", 1)
+		xot.InterfaceBytesReceived.Add("tun", int64(n - 5))
 		return packet[4], packet[5:n], nil
 	}
 }
@@ -342,6 +344,8 @@ func WriteTun(ifce *TunInterface, header byte, data []byte) error {
 		log.Printf("Error writing to TUN (Header: 0x%02X, Data Len: %d): %v", header, len(data), err)
 		return err
 	}
+	xot.InterfacePacketsSent.Add("tun", 1)
+	xot.InterfaceBytesSent.Add("tun", int64(n - 5))
 	if n != len(buf) {
 		return fmt.Errorf("short write to TUN: wrote %d of %d bytes", n, len(buf))
 	}
@@ -406,7 +410,6 @@ func main() {
 	
 	// Watch config for changes
 	go func() {
-		xot.ThreadStarts.Add("watch_config", 1)
 		xot.ThreadsActive.Add("watch_config", 1)
 		defer xot.ThreadsActive.Add("watch_config", -1)
 		tg.watchConfig()
@@ -423,7 +426,6 @@ func main() {
 	
 	// Handle TUN reads
 	go func() {
-		xot.ThreadStarts.Add("tun_read_handler", 1)
 		xot.ThreadsActive.Add("tun_read_handler", 1)
 		defer xot.ThreadsActive.Add("tun_read_handler", -1)
 		tg.handleTunRead()
@@ -433,7 +435,6 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		xot.ThreadStarts.Add("signal_handler", 1)
 		xot.ThreadsActive.Add("signal_handler", 1)
 		defer xot.ThreadsActive.Add("signal_handler", -1)
 		<-sigChan
@@ -452,13 +453,12 @@ func main() {
 		if err != nil {
 			continue
 		}
-		xot.SessionsOpened.Add(1)
+		xot.InterfaceSessionsOpened.Add("unix", 1)
 		go func() {
-			xot.ThreadStarts.Add("server_conn_handler", 1)
 			xot.ThreadsActive.Add("server_conn_handler", 1)
 			defer xot.ThreadsActive.Add("server_conn_handler", -1)
 			tg.handleServerConn(conn)
-			xot.SessionsClosed.Add(1)
+			xot.InterfaceSessionsClosed.Add("unix", 1)
 		}()
 	}
 }
@@ -471,7 +471,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 	tunDest := fmt.Sprintf("TUN(%d)", tg.ifce.Fd())
 	
 	for {
-		data, err := xot.ReadXot(conn)
+		data, err := xot.ReadXot("unix", conn)
 		if err != nil {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v", source, err)
@@ -482,17 +482,17 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 					lci_err = pkt.LCI
 				}
 				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-				xot.SendXot(conn, clr.Serialize())
+				xot.SendXot("unix", conn, clr.Serialize())
 			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
 		}
-		xot.BytesReceived.Add("SVR", int64(len(data)))
 		
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
+			xot.PacketsHandled.Add("unknown", 1)
 			continue
 		}
 		xot.PacketsHandled.Add(pkt.TypeName(), 1)
@@ -501,7 +501,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			log.Printf("%s: %v", source, err)
 			xot.CausesGenerated.Add("packet_too_long", 1)
 			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-			xot.SendXot(conn, clr.Serialize())
+			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
 
@@ -521,7 +521,6 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 				// Remap LCI to TUN side
 				pkt.LCI = s.LciA
 				WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
-				xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 				
 				// SESS001: For remote-initiated clear, we must wait for CLR_CONF from TUN
 				// before removing the session, otherwise the CLR_CONF from TUN will be dropped
@@ -545,7 +544,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		if atomic.LoadInt32(&tg.linkState) != LinkStateOperational {
 			log.Printf("%s: Dropping packet for LCI %d - link not operational", source, incomingLCI)
 			clr := xot.CreateClearRequest(incomingLCI, xot.CauseNetworkCongestion, 0)
-			xot.SendXot(conn, clr.Serialize())
+			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
 
@@ -558,7 +557,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		if tunLCI == 0 {
 			log.Printf("%s: Failed to allocate tunLCI for incoming LCI %d", source, incomingLCI)
 			clr := xot.CreateClearRequest(incomingLCI, xot.CauseNetworkCongestion, 0)
-			xot.SendXot(conn, clr.Serialize())
+			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
 
@@ -573,7 +572,6 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		
 		// Always use TunHeaderData (0x00) for sending to TUN as per user feedback
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
-		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 	}
 }
 
@@ -590,7 +588,6 @@ func (tg *TunGateway) handleTunRead() {
 			log.Printf("Error reading from TUN: %v", err)
 			return
 		}
-		xot.BytesReceived.Add("TUN", int64(len(payload)))
 
 		if len(payload) == 0 {
 			if *trace {
@@ -598,6 +595,7 @@ func (tg *TunGateway) handleTunRead() {
 			}
 			if hdr == TunHeaderConnect {
 				if atomic.LoadInt32(&tg.linkState) != LinkStateOperational {
+					xot.InterfaceSessionsOpened.Add("tun", 1)
 					if *trace {
 						log.Printf("%s< Responding with Connect (0x01)", tunSource)
 					}
@@ -606,6 +604,7 @@ func (tg *TunGateway) handleTunRead() {
 				}
 			} else if hdr == TunHeaderDisconnect {
 				log.Printf("%s: Received Disconnect from kernel - cleaning up all sessions", tunSource)
+				xot.InterfaceSessionsClosed.Add("tun", 1)
 				atomic.StoreInt32(&tg.linkState, LinkStateDown)
 				tg.closeAllSessions()
 			}
@@ -617,6 +616,7 @@ func (tg *TunGateway) handleTunRead() {
 			if *trace {
 				log.Printf("%s>??? UNKNOWN (hdr=0x%02X) % X", tunSource, hdr, payload)
 			}
+			xot.PacketsHandled.Add("unknown", 1)
 			continue
 		}
 		xot.PacketsHandled.Add(pkt.TypeName(), 1)
@@ -686,7 +686,7 @@ func (tg *TunGateway) handleTunRead() {
 				tg.sm.RemoveSession(s)
 			}
 
-			xot.CallsReceived.Add("TUN", 1)
+			xot.InterfaceCallRequest.Add("tun", 1)
 			called, calling, fac, _, err := pkt.ParseCallRequest()
 			if err == nil && tg.cm.GetServer(called) != nil {
 				log.Printf("TUN: Intercepting CALL_REQ from %s to %s (fac: %s)", calling, called, xot.FormatFacilities(fac))
@@ -710,6 +710,7 @@ func (tg *TunGateway) handleTunRead() {
 				if _, _, fac, _, err := pkt.ParseCallConnected(); err == nil {
 					facStr = fmt.Sprintf(" (fac: %s)", xot.FormatFacilities(fac))
 				}
+				xot.InterfaceCallConnected.Add("tun", 1)
 				log.Printf("TUN: Call connected on LCI %d%s", pkt.LCI, facStr)
 				s.SetState(xot.StateP4)
 			} else if pkt.GetBaseType() == xot.PktTypeClearRequest {
@@ -725,18 +726,17 @@ func (tg *TunGateway) handleTunRead() {
 				WriteTun(tg.ifce, TunHeaderData, conf.Serialize())
 				
 				// Forward CLEAR to gateway and cleanup
-				xot.SendXot(s.ConnB, pkt.Serialize())
+				xot.SendXot("unix", s.ConnB, pkt.Serialize())
 				tg.sm.RemoveSession(s)
 				continue
 			} else if pkt.GetBaseType() == xot.PktTypeClearConfirm {
 				log.Printf("TUN: Clear Confirmation from kernel on LCI %d", pkt.LCI)
-				xot.SendXot(s.ConnB, pkt.Serialize())
+				xot.SendXot("unix", s.ConnB, pkt.Serialize())
 				tg.sm.RemoveSession(s)
 				continue
 			}
 
-			xot.SendXot(s.ConnB, pkt.Serialize())
-			xot.BytesSent.Add("SVR", int64(len(pkt.Serialize())))
+			xot.SendXot("unix", s.ConnB, pkt.Serialize())
 		} else if *trace {
 			log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pkt.TypeName(), pkt.LCI)
 			
@@ -781,7 +781,8 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	tg.sm.AddSession(s)
 
 	go func() {
-		xot.ThreadStarts.Add("gateway_read_handler", 1)
+		xot.InterfaceSessionsOpened.Add("xot", 1)
+		defer xot.InterfaceSessionsClosed.Add("xot", 1)
 		xot.ThreadsActive.Add("gateway_read_handler", 1)
 		defer xot.ThreadsActive.Add("gateway_read_handler", -1)
 		tg.handleGatewayRead(conn)
@@ -790,9 +791,7 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	if *trace {
 		xot.LogTrace(fmt.Sprintf("TUN(%d)", tg.ifce.Fd()), fmt.Sprintf("GWY(%d)", xot.GetFd(conn)), pkt)
 	}
-	xot.CallsSent.Add("GWY", 1)
-	xot.BytesSent.Add("GWY", int64(len(pkt.Serialize())))
-	if err := xot.SendXot(conn, pkt.Serialize()); err != nil {
+	if err := xot.SendXot("xot", conn, pkt.Serialize()); err != nil {
 		log.Printf("Failed to send CALL_REQ to gateway: %v", err)
 		// cleanupConn will be called by the handleGatewayRead goroutine 
 		// when it sees the error or connection close, which will send CLEAR to TUN.
@@ -810,7 +809,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 	tunDest := fmt.Sprintf("TUN(%d)", tg.ifce.Fd())
 	
 	for {
-		data, err := xot.ReadXot(conn)
+		data, err := xot.ReadXot("xot", conn)
 		if err != nil {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v from gateway", source, err)
@@ -821,17 +820,17 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 					lci_err = pkt.LCI
 				}
 				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-				xot.SendXot(conn, clr.Serialize())
+				xot.SendXot("xot", conn, clr.Serialize())
 			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
 		}
-		xot.BytesReceived.Add("GWY", int64(len(data)))
 		
 		pkt, err := xot.ParseX25(data)
 		if err != nil {
 			log.Printf("%s: Error parsing X.25: %v", source, err)
+			xot.PacketsHandled.Add("unknown", 1)
 			continue
 		}
 		xot.PacketsHandled.Add(pkt.TypeName(), 1)
@@ -853,7 +852,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			log.Printf("%s: %v from gateway", source, err)
 			xot.CausesGenerated.Add("packet_too_long", 1)
 			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-			xot.SendXot(conn, clr.Serialize())
+			xot.SendXot("xot", conn, clr.Serialize())
 			return
 		}
 
@@ -862,7 +861,6 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 		}
 
 		if pkt.GetBaseType() == xot.PktTypeCallConnected {
-			xot.CallsReceived.Add("GWY", 1)
 			s.SetState(xot.StateP4)
 		} else if pkt.GetBaseType() == xot.PktTypeClearRequest || pkt.GetBaseType() == xot.PktTypeClearConfirm {
 			log.Printf("%s: Call cleared on LCI %d (type: %s)", source, s.LciA, pkt.TypeName())
@@ -871,7 +869,6 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			}
 			// Forward to TUN
 			WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
-			xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 			
 			// SESS001: For remote-initiated clear, we must wait for CLR_CONF from TUN
 			if pkt.GetBaseType() == xot.PktTypeClearConfirm {
@@ -883,7 +880,6 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 		}
 		
 		WriteTun(tg.ifce, TunHeaderData, pkt.Serialize())
-		xot.BytesSent.Add("TUN", int64(len(pkt.Serialize())))
 	}
 }
 
