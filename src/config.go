@@ -9,10 +9,16 @@ import (
 	"time"
 )
 
+const (
+	LciStartDefault = 1024
+	LciEndDefault = 2048
+	PortDefault = 1998
+)
+
 type XotServerConfig struct {
 	Prefix     string `json:"prefix"`      // X.121 prefix (e.g., "123/3")
 	IP         string `json:"ip"`          // XOT server IP
-	Port       int    `json:"port"`        // Port (default 1998)
+	Port       int    `json:"port"`        // Port (default PortDefault)
 	DNSPattern string `json:"dns_pattern"` // Regex for DNS lookup
 	DNSName    string `json:"dns_name"`    // DNS name template (e.g., "\2.\1.example.org")
 }
@@ -22,9 +28,20 @@ type TunConfig struct {
 	LciEnd   int `json:"lci_end"`   // End of TUN LCI range
 }
 
+type ServiceConfig struct {
+	StatsPort int `json:"stats-port"`
+}
+
+type TunGatewayConfig struct {
+	TunConfig
+	ServiceConfig
+}
+
 type Config struct {
-	Tun     TunConfig          `json:"tun"`
-	Servers []XotServerConfig `json:"servers"`
+ 	TunGateway TunGatewayConfig  `json:"tun-gateway"`
+ 	XotGateway ServiceConfig     `json:"xot-gateway"`
+ 	XotServer  ServiceConfig     `json:"xot-server"`
+ 	Servers    []XotServerConfig `json:"servers"`
 }
 
 type ConfigManager struct {
@@ -63,11 +80,11 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	}
 
 	// Set defaults for TUN
-	if cfg.Tun.LciStart == 0 {
-		cfg.Tun.LciStart = 1
+	if cfg.TunGateway.LciStart == 0 {
+		cfg.TunGateway.LciStart = LciStartDefault
 	}
-	if cfg.Tun.LciEnd == 0 {
-		cfg.Tun.LciEnd = 255
+	if cfg.TunGateway.LciEnd == 0 {
+		cfg.TunGateway.LciEnd = LciEndDefault
 	}
 
 	// Set defaults and validate servers
@@ -75,7 +92,7 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	for i := range cfg.Servers {
 		srv := cfg.Servers[i]
 		if srv.Port == 0 {
-			srv.Port = 1998
+			srv.Port = PortDefault
 		}
 
 		hasIP := srv.IP != ""
@@ -114,13 +131,31 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	return true, nil
 }
 
-func (cm *ConfigManager) GetTunConfig() TunConfig {
+func (cm *ConfigManager) GetTunGatewayConfig() TunGatewayConfig {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+ 	if cm.config == nil {
+ 		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
+ 	}
+ 	return cm.config.TunGateway
+}
+ 
+func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
-		return TunConfig{LciStart: 1, LciEnd: 255}
+		return ServiceConfig{}
 	}
-	return cm.config.Tun
+	return cm.config.XotGateway
+}
+
+func (cm *ConfigManager) GetXotServerConfig() ServiceConfig {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if cm.config == nil {
+		return ServiceConfig{}
+	}
+	return cm.config.XotServer
 }
 
 func (cm *ConfigManager) GetServers() []XotServerConfig {

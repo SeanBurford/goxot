@@ -10,7 +10,9 @@ import (
 func TestConfigManager(t *testing.T) {
 	filename := "test_config.json"
 	content := `{
-		"tun": {"lci_start": 10, "lci_end": 20},
+		"tun-gateway": {"lci_start": 10, "lci_end": 20},
+		"xot-gateway": {},
+		"xot-server": {"stats-port": 12345},
 		"servers": [{"prefix": "123/3", "ip": "1.1.1.1"}]
 	}`
 	err := os.WriteFile(filename, []byte(content), 0644)
@@ -24,9 +26,19 @@ func TestConfigManager(t *testing.T) {
 		t.Fatalf("NewConfigManager failed: %v", err)
 	}
 
-	tun := cm.GetTunConfig()
+	tun := cm.GetTunGatewayConfig()
 	if tun.LciStart != 10 || tun.LciEnd != 20 {
 		t.Errorf("Expected TUN LCI 10-20, got %d-%d", tun.LciStart, tun.LciEnd)
+	}
+
+	xgw := cm.GetXotGatewayConfig()
+	if xgw.StatsPort != 0 {
+		t.Errorf("Expected XOT Gateway stats-port 0, got %d", xgw.StatsPort)
+	}
+
+	xsr := cm.GetXotServerConfig()
+	if xsr.StatsPort != 12345 {
+		t.Errorf("Expected XOT Server stats-port 12345, got %d", xsr.StatsPort)
 	}
 
 	srv := cm.GetServer("12345")
@@ -197,11 +209,11 @@ func TestConfigLCIDefaults(t *testing.T) {
 		t.Fatalf("NewConfigManager failed: %v", err)
 	}
 
-	tun := cm.GetTunConfig()
-	if tun.LciStart != 1 {
-		t.Errorf("Expected LciStart=1, got %d", tun.LciStart)
+	tun := cm.GetTunGatewayConfig()
+	if tun.LciStart != 1024 {
+		t.Errorf("Expected LciStart=1024, got %d", tun.LciStart)
 	}
-	if tun.LciEnd != 255 {
-		t.Errorf("Expected LciEnd=255, got %d", tun.LciEnd)
+	if tun.LciEnd != 2048 {
+		t.Errorf("Expected LciEnd=2048, got %d", tun.LciEnd)
 	}
 }

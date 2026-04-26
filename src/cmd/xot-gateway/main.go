@@ -31,10 +31,6 @@ var (
 func main() {
 	flag.Parse()
 
-	if *statsPort > 0 {
-		xot.StartStatsServer(*statsPort)
-	}
-
 	cm, err := xot.NewConfigManager(*configPath)
 	if err != nil {
 		log.Printf("Warning: Failed to initialize config manager: %v", err)
@@ -44,6 +40,14 @@ func main() {
 			log.Printf("Warning: Failed to load config: %v", err)
 		}
 	}
+
+        actualStatsPort := *statsPort
+        if actualStatsPort == 0 && cm != nil {
+                actualStatsPort = cm.GetXotGatewayConfig().StatsPort
+        }
+        if actualStatsPort > 0 {
+                xot.StartStatsServer(actualStatsPort)
+        }
 
 	sockPath := "/tmp/xot_gwy.sock"
 	os.Remove(sockPath)

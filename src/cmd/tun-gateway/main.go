@@ -351,10 +351,6 @@ func WriteTun(ifce *TunInterface, header byte, data []byte) error {
 func main() {
 	flag.Parse()
 	
-	if *statsPort > 0 {
-		xot.StartStatsServer(*statsPort)
-	}
-
 	// Load config
 	cm, err := xot.NewConfigManager(*configPath)
 	if err != nil {
@@ -365,10 +361,18 @@ func main() {
 			log.Printf("Warning: Failed to load config: %v", err)
 		}
 	}
-	
+
+ 	actualStatsPort := *statsPort
+ 	if actualStatsPort == 0 && cm != nil {
+ 		actualStatsPort = cm.GetTunGatewayConfig().StatsPort
+ 	}
+	if actualStatsPort > 0 {
+		xot.StartStatsServer(actualStatsPort)
+	}
+
 	var tunCfg xot.TunConfig
 	if cm != nil {
-		tunCfg = cm.GetTunConfig()
+		tunCfg = cm.GetTunGatewayConfig().TunConfig
 	} else {
 		tunCfg = xot.TunConfig{LciStart: 1024, LciEnd: 4095}
 	}
