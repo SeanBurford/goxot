@@ -45,9 +45,16 @@ The application uses a `config.json` file to define XOT servers.
 Example `config.json`:
 ```json
 {
-  "tun": {
+  "xot-server": {
+    "stats-port": 8001
+  },
+  "xot-gateway": {
+    "stats-port": 8002
+  },
+  "tun-gateway": {
     "lci_start": 1,
-    "lci_end": 255
+    "lci_end": 255,
+    "stats-port": 8003
   },
   "servers": [
     {
