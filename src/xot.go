@@ -33,11 +33,15 @@ func isPacketConn(conn net.Conn) bool {
 
 func updateCallRequestCount(ifname string, data []byte) {
 	if len(data) >= 3 {
-		if data[2] == PktTypeCallRequest {
+		switch data[2] {
+		case PktTypeCallRequest:
 			InterfaceCallRequest.Add(ifname, 1)
-		}
-		if data[2] == PktTypeCallConnected {
+		case PktTypeCallConnected:
 			InterfaceCallConnected.Add(ifname, 1)
+		case PktTypeClearRequest:
+			InterfaceClearRequest.Add(ifname, 1)
+		case PktTypeClearConfirm:
+			InterfaceClearConfirm.Add(ifname, 1)
 		}
 	}
 }

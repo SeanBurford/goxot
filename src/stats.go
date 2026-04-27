@@ -21,8 +21,10 @@ var (
 	// Interface-specific stats
 	InterfaceSessionsOpened  = expvar.NewMap("interface_sessions_opened")
 	InterfaceSessionsClosed  = expvar.NewMap("interface_sessions_closed")
-	InterfaceCallRequest     = expvar.NewMap("interface_calls_sent")
-	InterfaceCallConnected   = expvar.NewMap("interface_calls_connected")
+	InterfaceCallRequest     = expvar.NewMap("interface_call_request")
+	InterfaceCallConnected   = expvar.NewMap("interface_call_connected")
+	InterfaceClearRequest    = expvar.NewMap("interface_clear_request")
+	InterfaceClearConfirm    = expvar.NewMap("interface_clear_confirm")
 	InterfacePacketsSent     = expvar.NewMap("interface_packets_sent")
 	InterfacePacketsReceived = expvar.NewMap("interface_packets_received")
 	InterfaceBytesSent       = expvar.NewMap("interface_bytes_sent")

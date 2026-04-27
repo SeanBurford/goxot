@@ -710,9 +710,9 @@ func (tg *TunGateway) handleTunRead() {
 				if _, _, fac, _, err := pkt.ParseCallConnected(); err == nil {
 					facStr = fmt.Sprintf(" (fac: %s)", xot.FormatFacilities(fac))
 				}
-				xot.InterfaceCallConnected.Add("tun", 1)
 				log.Printf("TUN: Call connected on LCI %d%s", pkt.LCI, facStr)
 				s.SetState(xot.StateP4)
+				xot.InterfaceCallConnected.Add("tun", 1)
 			} else if pkt.GetBaseType() == xot.PktTypeClearRequest {
 				log.Printf("TUN: Clear Request from kernel on LCI %d", pkt.LCI)
 				s.SetState(xot.StateP5)
@@ -728,11 +728,13 @@ func (tg *TunGateway) handleTunRead() {
 				// Forward CLEAR to gateway and cleanup
 				xot.SendXot("unix", s.ConnB, pkt.Serialize())
 				tg.sm.RemoveSession(s)
+				xot.InterfaceClearRequest.Add("tun", 1)
 				continue
 			} else if pkt.GetBaseType() == xot.PktTypeClearConfirm {
 				log.Printf("TUN: Clear Confirmation from kernel on LCI %d", pkt.LCI)
 				xot.SendXot("unix", s.ConnB, pkt.Serialize())
 				tg.sm.RemoveSession(s)
+				xot.InterfaceClearConfirm.Add("tun", 1)
 				continue
 			}
 
