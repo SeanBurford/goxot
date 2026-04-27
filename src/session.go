@@ -77,7 +77,8 @@ func (sm *SessionManager) AddSession(s *Session) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	id := fmt.Sprintf("%v:%d-%v:%d", s.ConnA, s.LciA, s.ConnB, s.LciB)
+	// Unique ID including connection pointers to distinguish recycled LCIs
+	id := fmt.Sprintf("A:%p:%d-B:%p:%d", s.ConnA, s.LciA, s.ConnB, s.LciB)
 	s.ID = id
 	sm.sessions[id] = s
 	
@@ -85,22 +86,64 @@ func (sm *SessionManager) AddSession(s *Session) {
 	sm.byALCI[s.LciA] = s
 	
 	// Index by B
-	if sm.byBConnLCI[s.ConnB] == nil {
-		sm.byBConnLCI[s.ConnB] = make(map[uint16]*Session)
+	if s.ConnB != nil {
+		if sm.byBConnLCI[s.ConnB] == nil {
+			sm.byBConnLCI[s.ConnB] = make(map[uint16]*Session)
+		}
+		sm.byBConnLCI[s.ConnB][s.LciB] = s
 	}
-	sm.byBConnLCI[s.ConnB][s.LciB] = s
+}
+
+// AllocateAndAddTunSession atomizes LCI allocation and session creation for TUN-side LCIs
+func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomingLCI uint16) (*Session, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Double check if already exists under lock
+	if lcis, ok := sm.byBConnLCI[incomingConn]; ok {
+		if s, ok := lcis[incomingLCI]; ok {
+			return s, nil
+		}
+	}
+
+	for lci := sm.tunLciStart; lci <= sm.tunLciEnd; lci++ {
+		if _, ok := sm.byALCI[lci]; !ok {
+			s := &Session{
+				LciA:  lci,
+				LciB:  incomingLCI,
+				ConnB: incomingConn,
+				State: StateP1,
+			}
+			id := fmt.Sprintf("A:%p:%d-B:%p:%d", s.ConnA, s.LciA, s.ConnB, s.LciB)
+			s.ID = id
+			sm.sessions[id] = s
+			sm.byALCI[lci] = s
+			if sm.byBConnLCI[incomingConn] == nil {
+				sm.byBConnLCI[incomingConn] = make(map[uint16]*Session)
+			}
+			sm.byBConnLCI[incomingConn][incomingLCI] = s
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("LCI exhaustion in range %d-%d", sm.tunLciStart, sm.tunLciEnd)
 }
 
 func (sm *SessionManager) RemoveSession(s *Session) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	delete(sm.sessions, s.ID)
-	delete(sm.byALCI, s.LciA)
+	if sm.sessions[s.ID] == s {
+		delete(sm.sessions, s.ID)
+	}
+	if sm.byALCI[s.LciA] == s {
+		delete(sm.byALCI, s.LciA)
+	}
 	if s.ConnB != nil && sm.byBConnLCI[s.ConnB] != nil {
-		delete(sm.byBConnLCI[s.ConnB], s.LciB)
-		if len(sm.byBConnLCI[s.ConnB]) == 0 {
-			delete(sm.byBConnLCI, s.ConnB)
+		if sm.byBConnLCI[s.ConnB][s.LciB] == s {
+			delete(sm.byBConnLCI[s.ConnB], s.LciB)
+			if len(sm.byBConnLCI[s.ConnB]) == 0 {
+				delete(sm.byBConnLCI, s.ConnB)
+			}
 		}
 	}
 }

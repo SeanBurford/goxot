@@ -117,31 +117,20 @@ const (
 )
 
 func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
-	if s := tg.sm.GetByBConnLCI(conn, incomingLCI); s != nil {
-		return s.LciA
-	}
-	
-	lci, err := tg.sm.AllocateTunLCI()
+	s, err := tg.sm.AllocateAndAddTunSession(conn, incomingLCI)
 	if err != nil {
 		log.Printf("TUN: %v", err)
 		return 0
 	}
-	
-	s := &xot.Session{
-		LciA:  lci,
-		LciB:  incomingLCI,
-		ConnB: conn,
-		State: xot.StateP1,
-	}
-	tg.sm.AddSession(s)
-	return lci
+	return s.LciA
 }
 
 func (tg *TunGateway) cleanupConn(conn net.Conn) {
 	sessions := tg.sm.GetSessionsForConn(conn)
 	for _, s := range sessions {
 		// SESS004: Only send CLEAR if we have a kernel-side state (not StateP1)
-		if s.State != xot.StateP1 {
+		// AND only if the session is still the one mapped to this LCI (ABA protection)
+		if s.State != xot.StateP1 && tg.sm.GetByALCI(s.LciA) == s {
 			if *trace {
 				log.Printf("TUN: Cleaning up LCI %d - sending CLEAR_REQ to kernel", s.LciA)
 			}
