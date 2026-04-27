@@ -243,7 +243,7 @@ export default function App() {
     for (const target of targets) {
       const serviceId = target.name.toLowerCase().replace(' ', '-');
       // Use the local Go proxy server on port 9090 with the service name
-      const proxyUrl = `http://localhost:9090/api/varz?service=${serviceId}`;
+      const proxyUrl = `http://${config.serverIp}:9090/api/varz?service=${serviceId}`;
       
       try {
         const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(2000) });

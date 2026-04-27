@@ -31,12 +31,24 @@ var (
 	InterfaceBytesReceived   = expvar.NewMap("interface_bytes_received")
 )
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == "OPTIONS" {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func StartStatsServer(port int) {
 	if port == 0 {
 		return
 	}
 	// Also expose on /varz as requested
-	http.Handle("/varz", expvar.Handler())
+	http.Handle("/varz", corsMiddleware(expvar.Handler()))
 	go func() {
 		addr := fmt.Sprintf(":%d", port)
 		fmt.Printf("Stats server listening on %s\n", addr)
