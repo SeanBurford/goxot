@@ -135,8 +135,6 @@ func main() {
 func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{}) {
 	defer conn.Close()
 	fd := xot.GetFd(conn)
-	log.Printf("LOCAL: New session on FD %d", fd)
-	defer log.Printf("LOCAL: Session on FD %d closed", fd)
 	source := fmt.Sprintf("LOCAL(%d)", fd)
 
 	for {
@@ -152,7 +150,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				}
 				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 				xot.SendXot("unix", conn, clr.Serialize())
-			} else if err != io.EOF {
+			} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 				log.Printf("%s: Error reading XOT: %v", source, err)
 			}
 			return
@@ -214,8 +212,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 		for _, ip := range ips {
 			addr := fmt.Sprintf("%s:%d", ip, srv.Port)
-			log.Printf("%s: Attempting connection to %s (for %s)", source, addr, called)
-			c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+				c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
 				xot.SetNoDelay(c)
 				remoteConn = c

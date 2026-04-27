@@ -11,6 +11,9 @@ The gateway is split into three distinct processes to improve security and modul
 3.  **`xot-gateway`**: An unprivileged process that handles outgoing XOT (TCP) connections. It listens on a Unix Domain Socket (`/tmp/xot_gwy.sock`) and connects to remote XOT servers based on the `config.json` routing table.
 4.  **`tun-listener`**: An unprivileged diagnostic tool that binds to a specific X.25 address on a Linux interface (typically a TUN interface managed by **tun-gateway**). It accepts incoming X.25 calls and provides real-time diagnostic information to the caller.
 
+Here is a typical setup, combining Linux x.25 routing and TUN devices with XOT:
+![Stress Test Setup](stress_test/stress_test1.png)
+
 ## Features
 
 - **RFC 1613 Implementation**: Handles XOT framing (4-byte header: 2-byte version + 2-byte length over TCP).
@@ -19,6 +22,9 @@ The gateway is split into three distinct processes to improve security and modul
 - **X.121 Routing**: Flexible routing based on X.121 address prefixes.
 - **Trace Logging**: Standardized trace format: `{source}>{destination} {packettype} {hexdump}`.
 - **DNS Based Routing**: Look up XOT server addresses from their X.121 address in DNS.
+- **Dashboard**: Cool dashboard to see what is happening.
+- **Observability**: State and counters are optionally exported via varz.
+
 
 ## Prerequisites
 
@@ -104,3 +110,9 @@ Trace logs follow the format: `{source}>{destination} {packettype} {hexdump}`
 - `SVR(FD)`: `xot-server` unixpacket socket.
 - `GWY(FD)`: `xot-gateway` unixpacket socket.
 - `TUN(0)`: Physical TUN interface.
+
+## Dashboard
+
+Instructions for running the dashboard are in `dashboard/`
+
+![Dashboard](dashboard/images/screenshot.png)
