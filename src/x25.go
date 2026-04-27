@@ -23,6 +23,13 @@ const (
 )
 
 const (
+	// LCI 0 is reserved for link-level packets (RESTART, DIAGNOSTIC).
+	// LCI field is 12 bits, so the maximum value is 4095.
+	LCIMin = 1
+	LCIMax = 4095
+)
+
+const (
 	CauseDTEOriginated       = 0x00
 	CauseNumberBusy          = 0x01
 	CauseInvalidFacility     = 0x03

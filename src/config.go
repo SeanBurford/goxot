@@ -88,6 +88,25 @@ func (cm *ConfigManager) Reload() (bool, error) {
 		cfg.TunGateway.LciEnd = LciEndDefault
 	}
 
+	// Clamp to the valid X.25 LCI range.  The LCI field is 12 bits (0–4095).
+	// LCI 0 is reserved for link-level frames; the usable range is 1–4095.
+	// Values outside this range are silently truncated by the 12-bit encoding,
+	// producing LCI 0 on the wire and confusing the kernel ("unknown 0B LCI 000").
+	if cfg.TunGateway.LciStart < LCIMin {
+		log.Printf("Warning: lci_start %d < minimum %d, clamping", cfg.TunGateway.LciStart, LCIMin)
+		cfg.TunGateway.LciStart = LCIMin
+	}
+	if cfg.TunGateway.LciEnd > LCIMax {
+		log.Printf("Warning: lci_end %d > maximum %d, clamping", cfg.TunGateway.LciEnd, LCIMax)
+		cfg.TunGateway.LciEnd = LCIMax
+	}
+	if cfg.TunGateway.LciStart >= cfg.TunGateway.LciEnd {
+		log.Printf("Warning: lci_start %d >= lci_end %d, resetting to defaults %d-%d",
+			cfg.TunGateway.LciStart, cfg.TunGateway.LciEnd, LciStartDefault, LciEndDefault)
+		cfg.TunGateway.LciStart = LciStartDefault
+		cfg.TunGateway.LciEnd = LciEndDefault
+	}
+
 	// Set defaults and validate servers
 	validServers := make([]XotServerConfig, 0, len(cfg.Servers))
 	for i := range cfg.Servers {

@@ -52,6 +52,18 @@ type SessionManager struct {
 }
 
 func NewSessionManager(lciStart, lciEnd uint16) *SessionManager {
+	// Defence-in-depth: clamp to the valid X.25 LCI range even if the caller
+	// passes unchecked config values.  Primary clamping happens in config.Reload.
+	if lciStart < LCIMin {
+		lciStart = LCIMin
+	}
+	if lciEnd > LCIMax {
+		lciEnd = LCIMax
+	}
+	if lciStart > lciEnd {
+		lciStart = LCIMin
+		lciEnd = LCIMax
+	}
 	return &SessionManager{
 		sessions:    make(map[string]*Session),
 		byALCI:      make(map[uint16]*Session),
