@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -11,8 +12,8 @@ import (
 
 const (
 	LciStartDefault = 1024
-	LciEndDefault = 2048
-	PortDefault = 1998
+	LciEndDefault   = 2048
+	PortDefault     = 1998
 )
 
 type XotServerConfig struct {
@@ -38,10 +39,10 @@ type TunGatewayConfig struct {
 }
 
 type Config struct {
- 	TunGateway TunGatewayConfig  `json:"tun-gateway"`
- 	XotGateway ServiceConfig     `json:"xot-gateway"`
- 	XotServer  ServiceConfig     `json:"xot-server"`
- 	Servers    []XotServerConfig `json:"servers"`
+	TunGateway TunGatewayConfig  `json:"tun-gateway"`
+	XotGateway ServiceConfig     `json:"xot-gateway"`
+	XotServer  ServiceConfig     `json:"xot-server"`
+	Servers    []XotServerConfig `json:"servers"`
 }
 
 type ConfigManager struct {
@@ -134,12 +135,12 @@ func (cm *ConfigManager) Reload() (bool, error) {
 func (cm *ConfigManager) GetTunGatewayConfig() TunGatewayConfig {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
- 	if cm.config == nil {
- 		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
- 	}
- 	return cm.config.TunGateway
+	if cm.config == nil {
+		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
+	}
+	return cm.config.TunGateway
 }
- 
+
 func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -181,9 +182,19 @@ func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
 	for _, srv := range cm.config.Servers {
 		parts := strings.Split(srv.Prefix, "/")
 		if len(parts) != 2 {
+			log.Printf("Warning: Prefix %s ignored: incorrect format", srv.Prefix)
 			continue
 		}
 		prefix := parts[0]
+		plen, err := strconv.Atoi(parts[1])
+		if err != nil {
+			log.Printf("Warning: Prefix %s/%s ignored: %v", parts[0], parts[1], err)
+			continue
+		}
+		if len(parts[0]) != plen {
+			log.Printf("Warning: Prefix %s/%s ignored: len %d != %d", parts[0], parts[1], len(parts[0]), plen)
+			continue
+		}
 		if strings.HasPrefix(x121Addr, prefix) {
 			srvCopy := srv
 			return &srvCopy
