@@ -1,0 +1,11 @@
+{
+  "xot-server": {
+    "stats-port": 8001
+  },
+  "xot-gateway": {
+    "stats-port": 8002
+  },
+  "tun-gateway": {
+    "stats-port": 8003
+  }
+}

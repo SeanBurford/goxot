@@ -1,0 +1,6 @@
+{
+  "name": "goxot VT-100 Dashboard",
+  "description": "A retro-styled dashboard for monitoring xot-server, xot-gateway, and tun-gateway status and traffic.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
