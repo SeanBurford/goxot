@@ -653,7 +653,12 @@ func (tg *TunGateway) handleTunRead() {
 				called, calling, fac, _, err := pkt.ParseCallRequest()
 				if err == nil && tg.cm.GetServer(called) != nil {
 					log.Printf("TUN: Intercepting CALL_REQ from %s to %s (fac: %s)", calling, called, xot.FormatFacilities(fac))
-					go tg.forwardToGateway(pkt)
+					// RACE-A: pkt.Payload aliases the TUN read buffer; copy before
+					// spawning the goroutine so handleTunRead can reuse packet freely.
+					pktData := make([]byte, len(payload))
+					copy(pktData, payload)
+					pktSafe, _ := xot.ParseX25(pktData)
+					go tg.forwardToGateway(pktSafe)
 					continue
 				}
 			}
@@ -703,11 +708,16 @@ func (tg *TunGateway) handleTunRead() {
 			}
 
 			xot.SendXot("unix", s.ConnB, oldData)
-		} else if *trace {
-			log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pktTypeName, pLCI)
-			
+		} else {
+			// RACE-B: send CLR_REQ unconditionally, not only under -trace.
+			// Without this, stale kernel sockets linger until T2/T3 timeout.
+			if *trace {
+				log.Printf("%s>??? NO_SESSION (hdr=0x%02X) %s LCI=%d", tunSource, hdr, pktTypeName, pLCI)
+			}
 			if pktType != xot.PktTypeClearRequest && pktType != xot.PktTypeClearConfirm && pLCI != 0 {
-				log.Printf("%s< NO_SESSION - Sending CLEAR to prevent kernel hang on LCI %d", tunSource, pLCI)
+				if *trace {
+					log.Printf("%s< NO_SESSION - Sending CLEAR to prevent kernel hang on LCI %d", tunSource, pLCI)
+				}
 				clr := xot.CreateClearRequest(pLCI, xot.CauseNetworkCongestion, 0)
 				WriteTun(tg.ifce, TunHeaderData, clr.Serialize())
 			}

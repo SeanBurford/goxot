@@ -249,7 +249,17 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			}
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
-			
+
+			// RACE-D: protect concurrent writes to conn (TCP stream).
+			// relay_dest_to_source and the shutdown path both write to conn;
+			// large packets (>=4096 bytes) use two Write calls, which can interleave.
+			var connMu sync.Mutex
+			sendToSource := func(data []byte) {
+				connMu.Lock()
+				defer connMu.Unlock()
+				xot.SendXot("xot", conn, data)
+			}
+
 			// Relay from destination to source
 			go func() {
 				xot.ThreadsActive.Add("relay_dest_to_source", 1)
@@ -265,7 +275,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							xot.CausesGenerated.Add("packet_too_long", 1)
 							lci_err := xot.GetLCI(d)
 							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-							xot.SendXot("xot", conn, clr.Serialize())
+							sendToSource(clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from %s: %v", source, destName, err)
 						}
@@ -294,12 +304,12 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
 						// Forward the clear packet before exiting
-						xot.SendXot("xot", conn, d)
+						sendToSource(d)
 						closeRelay()
 						return
 					}
 
-					xot.SendXot("xot", conn, d)
+					sendToSource(d)
 				}
 			}()
 
@@ -364,7 +374,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				if *trace {
 					xot.LogTrace("SHUTDOWN", source, clr)
 				}
-				xot.SendXot("xot", conn, clr.Serialize())
+				sendToSource(clr.Serialize())
 			}
 			
 			// Ensure both goroutines exit by closing connections
