@@ -45,9 +45,10 @@ type SessionManager struct {
 	sessions     map[string]*Session
 	byALCI       map[uint16]*Session
 	byBConnLCI   map[net.Conn]map[uint16]*Session
-	
-	tunLciStart  uint16
-	tunLciEnd    uint16
+
+	tunLciStart uint16
+	tunLciEnd   uint16
+	nextLCI     uint16 // round-robin cursor; never reuse the most-recently freed LCI immediately
 }
 
 func NewSessionManager(lciStart, lciEnd uint16) *SessionManager {
@@ -57,6 +58,7 @@ func NewSessionManager(lciStart, lciEnd uint16) *SessionManager {
 		byBConnLCI:  make(map[net.Conn]map[uint16]*Session),
 		tunLciStart: lciStart,
 		tunLciEnd:   lciEnd,
+		nextLCI:     lciStart,
 	}
 }
 
@@ -106,8 +108,15 @@ func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomi
 		}
 	}
 
-	for lci := sm.tunLciStart; lci <= sm.tunLciEnd; lci++ {
+	// Round-robin: start from nextLCI so that a just-freed LCI is not immediately
+	// reused. This is defence-in-depth against any residual cleanupConn races where
+	// a late goroutine still holds a stale session pointer for the old LCI value.
+	rangeSize := sm.tunLciEnd - sm.tunLciStart + 1
+	for i := uint16(0); i < rangeSize; i++ {
+		lci := sm.tunLciStart + (sm.nextLCI-sm.tunLciStart+i)%rangeSize
 		if _, ok := sm.byALCI[lci]; !ok {
+			// Advance cursor past this LCI for the next allocation.
+			sm.nextLCI = sm.tunLciStart + (lci-sm.tunLciStart+1)%rangeSize
 			s := &Session{
 				LciA:  lci,
 				LciB:  incomingLCI,

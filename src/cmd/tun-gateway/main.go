@@ -686,23 +686,28 @@ func (tg *TunGateway) handleTunRead() {
 			} else if pktType == xot.PktTypeClearRequest {
 				log.Printf("TUN: Clear Request from kernel on LCI %d", s.LciB)
 				s.SetState(xot.StateP5)
-				
+
 				// Respond with Clear Confirmation to kernel immediately
 				confBuf := make([]byte, 3)
 				confBuf[0] = payload[0]
 				confBuf[1] = payload[1]
 				confBuf[2] = xot.PktTypeClearConfirm
 				WriteTun(tg.ifce, TunHeaderData, confBuf)
-				
-				// Forward CLEAR to gateway and cleanup
-				xot.SendXot("unix", s.ConnB, oldData)
+
+				// Remove session before forwarding to peer: sending to ConnB can
+				// trigger the peer to close its unix socket immediately, causing
+				// handleServerConn to return and defer cleanupConn() to fire.
+				// If the session is still in the map at that point, cleanupConn
+				// sends a spurious CLR_REQ that can kill a freshly-reused LCI.
 				tg.sm.RemoveSession(s)
+				xot.SendXot("unix", s.ConnB, oldData)
 				xot.InterfaceClearRequest.Add("tun", 1)
 				continue
 			} else if pktType == xot.PktTypeClearConfirm {
 				log.Printf("TUN: Clear Confirmation from kernel on LCI %d", s.LciB)
-				xot.SendXot("unix", s.ConnB, oldData)
+				// Remove before forwarding — same cleanupConn race as CLR_REQ path above.
 				tg.sm.RemoveSession(s)
+				xot.SendXot("unix", s.ConnB, oldData)
 				xot.InterfaceClearConfirm.Add("tun", 1)
 				continue
 			}
