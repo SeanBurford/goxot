@@ -482,6 +482,16 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		// Remap LCI
 		incomingLCI := xot.GetLCI(data)
 
+		// ABA protection: If we get a new CALL_REQ for an LCI that we think is still active
+		// (e.g. in state P5 clearing), we MUST force-remove the old session mapping
+		// so that a new session is allocated for this call.
+		if pktType == xot.PktTypeCallRequest {
+			if s := tg.sm.GetByBConnLCI(conn, incomingLCI); s != nil {
+				log.Printf("%s: Forced removal of old session for LCI %d - new CALL_REQ arrived", source, incomingLCI)
+				tg.sm.RemoveByBConnLCI(conn, incomingLCI)
+			}
+		}
+
 		if pktType == xot.PktTypeClearRequest || pktType == xot.PktTypeClearConfirm {
 			log.Printf("%s: Call cleared on LCI %d (type: %s)", source, incomingLCI, pktTypeName)
 			if pktType == xot.PktTypeClearRequest && len(data) >= 4 {

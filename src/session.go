@@ -128,6 +128,27 @@ func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomi
 	return nil, fmt.Errorf("LCI exhaustion in range %d-%d", sm.tunLciStart, sm.tunLciEnd)
 }
 
+func (sm *SessionManager) RemoveByBConnLCI(conn net.Conn, lci uint16) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	lcis, ok := sm.byBConnLCI[conn]
+	if !ok {
+		return
+	}
+	s, ok := lcis[lci]
+	if !ok {
+		return
+	}
+
+	delete(sm.sessions, s.ID)
+	delete(sm.byALCI, s.LciA)
+	delete(lcis, lci)
+	if len(lcis) == 0 {
+		delete(sm.byBConnLCI, conn)
+	}
+}
+
 func (sm *SessionManager) RemoveSession(s *Session) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
