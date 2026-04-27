@@ -66,9 +66,9 @@ func ParseX25(data []byte) (*X25Packet, error) {
 		return nil, fmt.Errorf("X.25 packet too short: %d bytes", len(data))
 	}
 
-	gfi := (data[0] >> 4) & 0x0F
-	lci := (uint16(data[0]&0x0F) << 8) | uint16(data[1])
-	pktType := data[2]
+	gfi := GetGFI(data)
+	lci := GetLCI(data)
+	pktType := GetPacketType(data)
 
 	return &X25Packet{
 		GFI:     gfi,
@@ -76,6 +76,69 @@ func ParseX25(data []byte) (*X25Packet, error) {
 		Type:    pktType,
 		Payload: data[3:],
 	}, nil
+}
+
+func GetGFI(data []byte) byte {
+	if len(data) < 1 {
+		return 0
+	}
+	return (data[0] >> 4) & 0x0F
+}
+
+func GetLCI(data []byte) uint16 {
+	if len(data) < 2 {
+		return 0
+	}
+	return (uint16(data[0]&0x0F) << 8) | uint16(data[1])
+}
+
+func GetPacketType(data []byte) byte {
+	if len(data) < 3 {
+		return 0
+	}
+	return data[2]
+}
+
+func GetPacketTypeName(pktType byte) string {
+	if (pktType & 0x01) == 0 {
+		return "DATA"
+	}
+	baseType := pktType
+	if (pktType & 0x0F) == 0x01 || (pktType & 0x0F) == 0x05 || (pktType & 0x0F) == 0x09 {
+		baseType = pktType & 0x0F
+	}
+
+	switch baseType {
+	case PktTypeCallRequest:
+		return "CALL_REQ"
+	case PktTypeCallConnected:
+		return "CALL_CONN"
+	case PktTypeClearRequest:
+		return "CLR_REQ"
+	case PktTypeClearConfirm:
+		return "CLR_CONF"
+	case PktTypeRR:
+		return "RR"
+	case PktTypeRNR:
+		return "RNR"
+	case PktTypeREJ:
+		return "REJ"
+	case PktTypeResetRequest:
+		return "RESET_REQ"
+	case PktTypeResetConfirm:
+		return "RESET_CONF"
+	case PktTypeRestartRequest:
+		return "RESTART_REQ"
+	case PktTypeRestartConfirm:
+		return "RESTART_CONF"
+	case PktTypeDiagnostic:
+		return "DIAG"
+	case PktTypeRegistrationReq:
+		return "REG_REQ"
+	case PktTypeRegistrationConf:
+		return "REG_CONF"
+	}
+	return fmt.Sprintf("UNKNOWN(0x%02X)", pktType)
 }
 
 func (p *X25Packet) IsData() bool {
@@ -107,37 +170,7 @@ func (p *X25Packet) TypeName() string {
 	if p.IsData() {
 		return "DATA"
 	}
-	switch p.GetBaseType() {
-	case PktTypeCallRequest:
-		return "CALL_REQ"
-	case PktTypeCallConnected:
-		return "CALL_CONN"
-	case PktTypeClearRequest:
-		return "CLR_REQ"
-	case PktTypeClearConfirm:
-		return "CLR_CONF"
-	case PktTypeRR:
-		return "RR"
-	case PktTypeRNR:
-		return "RNR"
-	case PktTypeREJ:
-		return "REJ"
-	case PktTypeResetRequest:
-		return "RESET_REQ"
-	case PktTypeResetConfirm:
-		return "RESET_CONF"
-	case PktTypeRestartRequest:
-		return "RESTART_REQ"
-	case PktTypeRestartConfirm:
-		return "RESTART_CONF"
-	case PktTypeDiagnostic:
-		return "DIAG"
-	case PktTypeRegistrationReq:
-		return "REG_REQ"
-	case PktTypeRegistrationConf:
-		return "REG_CONF"
-	}
-	return fmt.Sprintf("UNKNOWN(0x%02X)", p.Type)
+	return GetPacketTypeName(p.GetBaseType())
 }
 
 func (p *X25Packet) ValidateSize() error {
@@ -157,6 +190,10 @@ func (p *X25Packet) ValidateSize() error {
 
 func LogTrace(source, dest string, pkt *X25Packet) {
 	log.Printf("%s>%s %s % X", source, dest, pkt.TypeName(), pkt.Serialize())
+}
+
+func LogTraceRaw(source, dest string, data []byte) {
+	log.Printf("%s>%s %s % X", source, dest, GetPacketTypeName(GetPacketType(data)), data)
 }
 
 // ParseCallRequest extracts addresses, facilities, and user data from a Call Request packet

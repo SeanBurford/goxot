@@ -217,6 +217,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			log.Printf("%s: Attempting connection to %s (for %s)", source, addr, called)
 			c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
+				xot.SetNoDelay(c)
 				remoteConn = c
 				connectedIP = ip
 				break
@@ -262,17 +263,15 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				xot.ThreadsActive.Add("relay_remote_to_local", 1)
 				defer xot.ThreadsActive.Add("relay_remote_to_local", -1)
 				defer relayWg.Done()
+				buf := xot.GetBuffer()
+				defer xot.PutBuffer(buf)
 				for {
-					d, err := xot.ReadXot("xot", remoteConn)
+					d, err := xot.ReadXotInto("xot", remoteConn, buf)
 					if err != nil {
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from remote", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
-							pkt, _ := xot.ParseX25(d)
-							lci_err := uint16(0)
-							if pkt != nil {
-								lci_err = pkt.LCI
-							}
+							lci_err := xot.GetLCI(d)
 							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot("unix", conn, clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
@@ -282,44 +281,30 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						return
 					}
 
+					pktType := xot.GetPacketType(d)
+					pktTypeName := xot.GetPacketTypeName(pktType)
 					if *trace {
-						p, _ := xot.ParseX25(d)
-						if p != nil {
-							xot.LogTrace(dest, source, p)
-						} else {
-							log.Printf("%s>%s UNKNOWN % X", dest, source, d)
-						}
+						xot.LogTraceRaw(dest, source, d)
 					}
 
-					p, _ := xot.ParseX25(d)
-					if p != nil {
-						xot.PacketsHandled.Add(p.TypeName(), 1)
-						if p.LCI != lci {
-							log.Printf("%s: Mismatched LCI %d from remote (expected %d) - ignoring", source, p.LCI, lci)
-							continue
+					xot.PacketsHandled.Add(pktTypeName, 1)
+					pLCI := xot.GetLCI(d)
+					if pLCI != lci {
+						log.Printf("%s: Mismatched LCI %d from remote (expected %d) - ignoring", source, pLCI, lci)
+						continue
+					}
+
+					if pktType == xot.PktTypeCallConnected {
+						log.Printf("%s: Call connected on LCI %d", source, lci)
+					} else if pktType == xot.PktTypeClearRequest || pktType == xot.PktTypeClearConfirm {
+						log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, pktTypeName)
+						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
+							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
-						if err := p.ValidateSize(); err != nil {
-							log.Printf("%s: %v from remote", source, err)
-							xot.CausesGenerated.Add("packet_too_long", 1)
-							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-							xot.SendXot("unix", conn, clr.Serialize())
-							return
-						}
-						if p.GetBaseType() == xot.PktTypeCallConnected {
-							log.Printf("%s: Call connected on LCI %d", source, lci)
-						} else if p.GetBaseType() == xot.PktTypeClearRequest || p.GetBaseType() == xot.PktTypeClearConfirm {
-							log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, p.TypeName())
-							if p.GetBaseType() == xot.PktTypeClearRequest && len(p.Payload) >= 1 {
-								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
-							}
-							// Forward the clear packet before exiting
-							xot.SendXot("unix", conn, d)
-							closeRelay()
-							return
-						}
-						if *trace {
-							xot.LogTrace(dest, source, p)
-						}
+						// Forward the clear packet before exiting
+						xot.SendXot("unix", conn, d)
+						closeRelay()
+						return
 					}
 
 					xot.SendXot("unix", conn, d)
@@ -331,17 +316,15 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				xot.ThreadsActive.Add("relay_local_to_remote", 1)
 				defer xot.ThreadsActive.Add("relay_local_to_remote", -1)
 				defer relayWg.Done()
+				buf := xot.GetBuffer()
+				defer xot.PutBuffer(buf)
 				for {
-					d, err := xot.ReadXot("unix", conn)
+					d, err := xot.ReadXotInto("unix", conn, buf)
 					if err != nil {
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from local", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
-							pkt, _ := xot.ParseX25(d)
-							lci_err := uint16(0)
-							if pkt != nil {
-								lci_err = pkt.LCI
-							}
+							lci_err := xot.GetLCI(d)
 							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot("unix", conn, clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
@@ -351,35 +334,28 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						return
 					}
 
-					p, _ := xot.ParseX25(d)
-					if p != nil {
-						xot.PacketsHandled.Add(p.TypeName(), 1)
-						if p.LCI != lci {
-							log.Printf("%s: Mismatched LCI %d from local (expected %d) - ignoring", source, p.LCI, lci)
-							continue
+					pktType := xot.GetPacketType(d)
+					pktTypeName := xot.GetPacketTypeName(pktType)
+					if *trace {
+						xot.LogTraceRaw(source, dest, d)
+					}
+
+					xot.PacketsHandled.Add(pktTypeName, 1)
+					pLCI := xot.GetLCI(d)
+					if pLCI != lci {
+						log.Printf("%s: Mismatched LCI %d from local (expected %d) - ignoring", source, pLCI, lci)
+						continue
+					}
+
+					if pktType == xot.PktTypeClearRequest || pktType == xot.PktTypeClearConfirm {
+						log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, pktTypeName)
+						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
+							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
-						if err := p.ValidateSize(); err != nil {
-							log.Printf("%s: %v from local", source, err)
-							xot.CausesGenerated.Add("packet_too_long", 1)
-							clr := xot.CreateClearRequest(p.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
-							xot.SendXot("unix", conn, clr.Serialize())
-							return
-						}
-						if *trace {
-							xot.LogTrace(source, dest, p)
-						}
-						if p.GetBaseType() == xot.PktTypeClearRequest || p.GetBaseType() == xot.PktTypeClearConfirm {
-							log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, p.TypeName())
-							if p.GetBaseType() == xot.PktTypeClearRequest && len(p.Payload) >= 1 {
-								xot.CausesReceived.Add(fmt.Sprintf("0x%02x", p.Payload[0]), 1)
-							}
-							// Forward the clear packet before exiting
-							xot.SendXot("xot", remoteConn, d)
-							closeRelay()
-							return
-						}
-					} else if *trace {
-						log.Printf("%s>%s UNKNOWN % X", source, dest, d)
+						// Forward the clear packet before exiting
+						xot.SendXot("xot", remoteConn, d)
+						closeRelay()
+						return
 					}
 
 					xot.SendXot("xot", remoteConn, d)

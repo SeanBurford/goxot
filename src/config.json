@@ -6,8 +6,8 @@
     "stats-port": 8002
   },
   "tun-gateway": {
-    "lci_start": 1,
-    "lci_end": 255,
+    "lci_start": 1024,
+    "lci_end": 4096,
     "stats-port": 8003
   },
   "servers": [
@@ -17,8 +17,13 @@
       "port": 1998
     },
     {
-      "prefix": "456/3",
-      "ip": "10.0.0.5",
+      "prefix": "127/3",
+      "ip": "192.168.248.100",
+      "port": 1998
+    },
+    {
+      "prefix": "701/3",
+      "ip": "192.168.251.250",
       "port": 1998
     }
   ]

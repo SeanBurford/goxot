@@ -17,14 +17,35 @@ var (
 	}
 	bufferPool = sync.Pool{
 		New: func() interface{} {
+			// Pre-allocate the maximum possible XOT packet size to avoid growth
 			return make([]byte, MaxXOTPacketSize)
 		},
 	}
 )
 
+// GetBuffer returns a buffer from the pool. The caller MUST call PutBuffer when done.
+func GetBuffer() []byte {
+	return bufferPool.Get().([]byte)
+}
+
+// PutBuffer returns a buffer to the pool.
+func PutBuffer(buf []byte) {
+	if cap(buf) < MaxXOTPacketSize {
+		return
+	}
+	bufferPool.Put(buf[:MaxXOTPacketSize])
+}
+
 const (
 	XotVersion = 0
 )
+
+func SetNoDelay(conn net.Conn) error {
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		return tcp.SetNoDelay(true)
+	}
+	return nil
+}
 
 func isPacketConn(conn net.Conn) bool {
 	network := conn.LocalAddr().Network()
@@ -85,12 +106,10 @@ func SendXot(ifname string, conn net.Conn, data []byte) error {
 	return err
 }
 
-// ReadXot reads an X.25 packet from a TCP connection with RFC 1613 framing
-func ReadXot(ifname string, conn net.Conn) ([]byte, error) {
+// ReadXotInto reads an X.25 packet into the provided buffer.
+// It returns the sub-slice of buf containing the data, or an error.
+func ReadXotInto(ifname string, conn net.Conn, buf []byte) ([]byte, error) {
 	if isPacketConn(conn) {
-		buf := bufferPool.Get().([]byte)
-		defer bufferPool.Put(buf)
-
 		n, err := conn.Read(buf)
 		if err != nil {
 			return nil, err
@@ -108,17 +127,13 @@ func ReadXot(ifname string, conn net.Conn) ([]byte, error) {
 
 		length := binary.BigEndian.Uint16(buf[2:4])
 		if int(length) > MaxX25PacketSize {
-			data := make([]byte, n-4)
-			copy(data, buf[4:n])
-			return data, fmt.Errorf("%w: XOT packet too large: %d > %d", ErrPacketTooLong, length, MaxX25PacketSize)
+			return buf[4:n], fmt.Errorf("%w: XOT packet too large: %d > %d", ErrPacketTooLong, length, MaxX25PacketSize)
 		}
 		if int(length) != n-4 {
 			return nil, fmt.Errorf("XOT length mismatch: header says %d, read %d", length, n-4)
 		}
 
-		res := make([]byte, length)
-		copy(res, buf[4:n])
-
+		res := buf[4:n]
 		updateCallRequestCount(ifname, res)
 		return res, nil
 	}
@@ -144,19 +159,38 @@ func ReadXot(ifname string, conn net.Conn) ([]byte, error) {
 
 	length := binary.BigEndian.Uint16(header[2:4])
 	if int(length) > MaxX25PacketSize {
-		// Read at least the first 3 bytes of the X.25 packet to try and get the LCI
-		data := make([]byte, 3)
-		io.ReadFull(conn, data)
-		return data, fmt.Errorf("%w: XOT packet too large: %d > %d", ErrPacketTooLong, length, MaxX25PacketSize)
+		// Read at least the first 3 bytes to try and get the LCI
+		io.ReadFull(conn, buf[:3])
+		return buf[:3], fmt.Errorf("%w: XOT packet too large: %d > %d", ErrPacketTooLong, length, MaxX25PacketSize)
 	}
-	data := make([]byte, length)
-	_, err = io.ReadFull(conn, data)
+
+	if int(length) > len(buf) {
+		return nil, fmt.Errorf("buffer too small: need %d, have %d", length, len(buf))
+	}
+
+	res := buf[:length]
+	_, err = io.ReadFull(conn, res)
 	if err != nil {
 		return nil, err
 	}
-	updateCallRequestCount(ifname, data)
+	updateCallRequestCount(ifname, res)
 
-	return data, nil
+	return res, nil
+}
+
+// ReadXot reads an X.25 packet from a TCP connection with RFC 1613 framing
+func ReadXot(ifname string, conn net.Conn) ([]byte, error) {
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf)
+
+	data, err := ReadXotInto(ifname, conn, buf)
+	if err != nil {
+		return nil, err
+	}
+	// We MUST copy here because the buf is returned to the pool
+	res := make([]byte, len(data))
+	copy(res, data)
+	return res, nil
 }
 
 func GetFd(conn net.Conn) int {
