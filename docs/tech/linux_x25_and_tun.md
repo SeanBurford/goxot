@@ -1,12 +1,13 @@
 # Interfacing with Linux X.25 and TUN Interfaces
 
-This document describes how GoXOT interfaces with the Linux kernel's X.25 implementation via the AF_X25 socket family and TUN network devices.
+This document describes interfacing with the Linux kernel's X.25 implementation via the AF_X25 socket family and TUN network devices.
 
 ## The Linux X.25 Stack
 
 The Linux kernel provides an AF_X25 socket family that implements the X.25 Packet Layer Protocol (PLP). It can run over various link layers, including LAPB (standard serial) and TUN (virtual encapsulation).
 
-### Socket API
+## X.25 over the Socket API
+
 Standard POSIX socket calls are used:
 *   **Socket Creation**: `socket(AF_X25, SOCK_SEQPACKET, 0)`. This is the only supported socket type for AF_X25. The protocol argument must be 0.
 *   **Addressing**: Uses `struct sockaddr_x25`.
@@ -14,10 +15,10 @@ Standard POSIX socket calls are used:
 
 ## X.25 over TUN (ARPHRD_X25)
 
-The `tun-gateway` interfaces with the kernel by creating a TUN device and setting its link type to `ARPHRD_X25` (value 271). This tells the kernel to treat the interface as a native X.25 packet device.
+Software can interface with the kernel by creating a TUN device and setting its link type to `ARPHRD_X25` (value 271). This tells the kernel to treat the interface as a native X.25 packet device.
 
 ### Encapsulation and Handshake
-Packets exchanged with the TUN device include a 4-byte PI header (`[0x00, 0x00, 0x08, 0x05]`) followed by a 1-byte control header. The TUN device must be opened **without** `IFF_NO_PI` so that the 4-byte Protocol Information header is included in every frame.
+In order to provide consistent detection of X.25 packets and maintain the kernel state machine for connections, the TUN device must be opened **without** `IFF_NO_PI` so that the 4-byte Protocol Information header is included in every frame.  PI packets exchanged with the TUN device include a 4-byte PI header (`[0x00, 0x00, 0x08, 0x05]`) followed by a 1-byte control header.
 
 #### Control Headers
 The following headers are defined (source: `net/x25/x25_dev.c`, constants from `include/net/x25device.h`):
@@ -30,10 +31,21 @@ The following headers are defined (source: `net/x25/x25_dev.c`, constants from `
 | `0x03` | `TunHeaderParam` | Exchange of link parameters. Not used in practice for ARPHRD_X25. |
 
 #### The Connect Handshake
+
 When the kernel's X.25 stack needs to transmit a frame and the link is down (`X25_LINK_STATE_0`), it sends a `TunHeaderConnect (0x01)` frame with an empty payload (`x25_dev.c:x25_establish_link`). The gateway **must** respond with an identical `TunHeaderConnect (0x01)` frame. On receiving the echo, the kernel calls `x25_link_established()`, transitions the link to `X25_LINK_STATE_2`, and immediately sends a `RESTART_REQUEST` packet (LCI=0, type `0xFB`) as a `TunHeaderData` frame. The gateway must respond to the `RESTART_REQUEST` with a `RESTART_CONFIRMATION` (LCI=0, type `0xFF`). Only then does the kernel transition to `X25_LINK_STATE_3` and begin forwarding queued packets.
+
+**COMPAT003**: All CALL_REQUESTs (from `connect()`), CALL_ACCEPTEDs (for inbound calls), CLR_REQs, CLR_CONFs, and data frames are queued until STATE_3. They are flushed by `x25_link_control()` (`x25_link.c:124–126`) when STATE_3 is entered.
+
+**COMPAT004**: If the kernel receives a `RESTART_CONFIRMATION` while already in `STATE_3`, it kills all active sockets with `ENETUNREACH`, sends a new `RESTART_REQUEST`, and returns to `STATE_2`.
+
+**COMPAT005**: When the kernel receives a `RESTART_REQUEST` while in `X25_LINK_STATE_3` all AF_X25 sockets are killed (`ENETUNREACH`), but the link state stays at `STATE_3` and the kernel immediately sends `RESTART_CONFIRMATION`. The kernel also remains in `STATE_3` after this (it does not transition back to `STATE_2`). The gateway reads the resulting `RESTART_CONFIRMATION` from TUN.
 
 #### The Disconnect Handshake
 The kernel sends `TunHeaderDisconnect (0x02)` with an **empty payload** when the link is terminated (`x25_dev.c:x25_terminate_link`). On receipt, the gateway must immediately clean up all active sessions. No echo or response is sent back to the kernel. The kernel has already called `x25_kill_by_neigh()` internally, which disconnects every AF_X25 socket on that interface with `ENETUNREACH`. Sending CLR_REQ packets back to the kernel after this point is unnecessary.
+
+*   **Interface Shutdown**: Receipt of a `TunHeaderDisconnect (0x02)` (with empty payload) signals a link-layer teardown, and the gateway should immediately close all active sessions associated with that interface. The kernel has already terminated all sockets internally; no CLR_REQ echo to the kernel is needed.
+
+**COMPAT010**: When the TUN fd is closed in Op6 step 3, the kernel fires `NETDEV_DOWN` synchronously during the `close()` call's execution path. `x25_link_terminated()` is called, which calls `x25_kill_by_neigh()`, disconnecting all remaining AF_X25 sockets with `ENETUNREACH`. This is the same cleanup that writing `TunHeaderDisconnect` in Op6 step 2 achieves.  `SOCK006` recommends writing `TunHeaderDisconnect` before `close()`. The NETDEV_DOWN path means the fd close alone is not unsafe — sockets are cleaned up — but the explicit write provides a deterministic point at which the gateway can complete session teardown before handing off to the process exit path.
 
 #### Kernel Link State Machine
 The kernel maintains an internal link state for each neighbor device (`x25_link.c`):
@@ -44,12 +56,6 @@ The kernel maintains an internal link state for each neighbor device (`x25_link.
 | `X25_LINK_STATE_1` | Connect Sent | Kernel sent TunHeaderConnect, awaiting echo. |
 | `X25_LINK_STATE_2` | Restart Sent | Echo received; RESTART_REQUEST sent, awaiting RESTART_CONFIRMATION. |
 | `X25_LINK_STATE_3` | Operational | RESTART_CONFIRMATION received; ready for data. |
-
-#### Observed Behaviours
-
-Additionally, the gateway must manage session state based on X.25 Control Packets:
-*   **Session Cleanup**: Upon receiving a `PktTypeClearRequest` from the TUN interface, the gateway must remove the associated LCI mapping to free resources and prevent state desynchronization.
-*   **Interface Shutdown**: Receipt of a `TunHeaderDisconnect (0x02)` (with empty payload) signals a link-layer teardown, and the gateway should immediately close all active sessions associated with that interface. The kernel has already terminated all sockets internally; no CLR_REQ echo to the kernel is needed.
 
 ## Linux X.25 IOCTLs
 
@@ -79,16 +85,6 @@ Standard routing IOCTLs used with AF_X25 sockets:
 | :--- | :--- | :--- |
 | `SIOCADDRT` | `x25_route_struct` | Add a prefix-based route to an interface. Requires `CAP_NET_ADMIN`. |
 | `SIOCDELRT` | `x25_route_struct` | Remove a route. Requires `CAP_NET_ADMIN`. |
-
-### Used by GoXOT
-| IOCTL | Description |
-| :--- | :--- |
-| `SIOCADDRT` | Add a prefix-based route to an interface (tun-gateway). |
-| `SIOCDELRT` | Remove a route (tun-gateway). |
-| `SIOCX25GFACILITIES` | Get negotiated facilities (tun-listener diagnostic tool only). |
-
-### Available but Unused
-All other IOCTLs listed in the complete table above are available but not currently called by any goxot component.
 
 ## Data Structures
 
@@ -134,6 +130,18 @@ struct x25_calluserdata {
 };
 ```
 
+For incoming calls, two checks are performed.  First, the call has to match the sockets bound address (`x25_sk(sk)->source_addr`).  Next:
+
+*  If both the call and socket have CUD, and there is a match, route the call to the socket.
+*  If the call OR socket does have CUD, but it does not match or cudlength is larger than the call CUD, track the socket as the `next_best`.
+
+Note that the length of CUD to match against is `cudmatchlength`, which is set by `SIOCX25SCUDMATCHLEN`.  The length provided in the `x25_calluserdata` structure by `SIOCX25SCALLUSERDATA` is effectively ignored except for outgoing calls.
+
+If no socket matches, the `next_best` will receive the call (i.e. CUD will be ignored).  This behaviour differs from the code comment ("Note: if a listening socket has cud set it must only get calls with matching cud").  For this reason, if you want to filter incoming calls by Call User Data, you should:
+
+1.  Use `SIOCX25SCALLUSERDATA` to request filtering.
+2.  Use `SIOCX25GCALLUSERDATA` on incoming calls to verify that filtering was effective.
+
 ### `struct x25_subscrip_struct`
 ```c
 struct x25_subscrip_struct {
@@ -143,6 +151,28 @@ struct x25_subscrip_struct {
 };
 ```
 
+`global_facil_mask` gets or sets the neighbour facilities mask:
+
+*  `X25_MASK_REVERSE`: Include `reverse` in created facilities. (default on link device up).
+*  `X25_MASK_THROUGHPUT`: Include `throughput` in created facilities. (default on link device up).
+*  `X25_MASK_PACKET_SIZE`: Include `pacsize_in` and `pacsize_out` in created facilities. (default on link device up).
+*  `X25_MASK_WINDOW_SIZE`: Include `winsize_in` and `winsize_out` in created facilities. (default on link device up).
+*  `X25_MASK_CALLING_AE` / `X25_MASK_CALLED_AE`: Include `X25_MARKER` + `X25_DTE_SERVICES` in created facilities.
+*  `X25_MASK_CALLING_AE`: Include `X25_FAC_CALLING_AE` if it is set when creating facilities.  `dte_facs->calling_ae` can be set with `SIOCX25SDTEFACILITIES`.
+*  `X25_MASK_CALLED_AE`: Include `X25_FAC_CALLED_AE` if it is set when creating facilities.  `dte_facs->called_ae` can be set with `SIOCX25SDTEFACILITIES`.
+
+`extended` gets or sets extended window modulus support (0 = 8, 1 = 128), as well as extended GFI and M bit handling.  It does not affect LCI mapping.
+
+`SIOCX25GSUBSCRIP` and `SIOCX25SSUBSCRIP` have no effect unless `device` must be the name of an up `APPHRD_X25` device.  If the device has no neighbour they also have no effect.
+
+### `struct x25_dte_facilities`
+
+```c
+
+```
+
+DTE Facilities can only be set on sockets in TCP_LISTEN or TCP_CLOSE state.
+
 ### `struct x25_route_struct`
 ```c
 struct x25_route_struct {
@@ -151,14 +181,13 @@ struct x25_route_struct {
     char               device[200-sizeof(unsigned long)]; /* 192 bytes on x86_64 */
 };
 ```
-
 ---
 
-## Connection Operations
+## TUN Connection Operations
 
 This section provides step-by-step procedures for common X.25 connection management tasks, including the required control header handshakes with the kernel. All TUN frames use the 4-byte PI header `[0x00, 0x00, 0x08, 0x05]` as prefix.
 
-### 1. Open an X25 Packet Socket in PI Mode
+### Open an X.25 TUN in PI Mode
 
 This establishes a TUN interface ready for X.25 traffic. "PI mode" means the TUN device includes the 4-byte Protocol Information header in every frame (i.e., `IFF_NO_PI` is **not** set).
 
@@ -208,7 +237,107 @@ This establishes a TUN interface ready for X.25 traffic. "PI mode" means the TUN
 
 ---
 
-### 2. Open an X.25 Connection
+### Establishing a call using an X.25 Packet Socket in PI Mode
+
+1. **CALL_REQUEST** — Kernel → TUN Gateway (TunHeaderData):
+   ```
+   [PI][0x00][GFI|LCI_H, LCI_L, 0x0B, addr_block, fac_block, CUD...]
+   ```
+
+2. **CALL_ACCEPTED** — Remote DCE → TUN Gateway → Kernel (TunHeaderData):
+   ```
+   [PI][0x00][GFI|LCI_H, LCI_L, 0x0F, addr_block, fac_block]
+   ```
+   Kernel state machine (`x25_state1_machine`) transitions to `X25_STATE_3` / `TCP_ESTABLISHED`.
+   `connect()` returns 0 (or the socket becomes readable for non-blocking callers).
+
+---
+
+### Close an X.25 TUN Packet Connection
+
+1. If socket is in `X25_STATE_3` (data transfer):
+   Kernel clears queues, sends CLEAR_REQUEST, enters `X25_STATE_2` (`TCP_CLOSE`), starts T23 timer.
+
+2. **CLEAR_REQUEST** — Kernel → TUN Gateway (TunHeaderData):
+   ```
+   [PI][0x00][GFI|LCI_H, LCI_L, 0x13, cause, diag]
+   ```
+   Gateway relays to remote DCE.
+
+3. **CLEAR_CONFIRMATION** — Remote DCE → TUN Gateway → Kernel (TunHeaderData):
+   ```
+   [PI][0x00][GFI|LCI_H, LCI_L, 0x17]
+   ```
+   Kernel `x25_state2_machine` calls `x25_disconnect()`, moves to `X25_STATE_0`, socket is freed.
+
+4. If T23 expires (180 s default) with no confirmation: kernel destroys socket unconditionally.
+
+---
+
+### Clear All Connections on a Packet Socket and Shut Down
+
+Gateway-initiated graceful shutdown.
+
+1. For each active session in the session manager:
+   a. Send CLEAR_REQUEST to the remote peer (over TCP) with an appropriate cause code.
+   b. Remove the session from the session manager.
+
+2. Send **TunHeaderDisconnect** to the kernel to instruct it to close all connections on the packet socket:
+   ```
+   write(tun_fd, [0x00, 0x00, 0x08, 0x05, 0x02])
+   ```
+   The kernel calls `x25_link_terminated()` → `x25_kill_by_neigh()` → disconnects all remaining AF_X25 sockets on this interface with `ENETUNREACH`.
+
+3. Close the TUN file descriptor:
+   ```
+   close(tun_fd)
+   ```
+   The kernel fires `NETDEV_UNREGISTER`, cleaning up neighbor and route entries.
+
+---
+
+### Receive a Notification that an X.25 Connection Was Closed Remotely and Clean Up
+
+The remote DCE initiates clearing.
+
+1. **CLEAR_REQUEST** — Remote DCE → TUN Gateway:
+   Gateway writes to TUN as TunHeaderData:
+   ```
+   [PI][0x00][GFI|LCI_H, LCI_L, 0x13, cause, diag]
+   ```
+
+2. Kernel `x25_state3_machine` receives CLEAR_REQUEST:
+   - Sends **CLEAR_CONFIRMATION** back via TunHeaderData: `[PI][0x00][GFI|LCI_H, LCI_L, 0x17]`
+   - Calls `x25_disconnect(sk, 0, cause, diag)` → socket moves to `X25_STATE_0`, `sk_state = TCP_CLOSE`
+   - Wakes any blocked `recv()` with EOF or error.
+
+3. Gateway reads **CLEAR_CONFIRMATION** from TUN (TunHeaderData). Gateway forwards CLR_CONF to remote, removes the LCI mapping from the session manager.
+
+### Receive a Notification that an X.25 Packet Socket Was Disconnected Remotely and Clean Up
+
+The link layer (L2) is terminated by the kernel. This affects all connections on the interface.
+
+1. Kernel sends **TunHeaderDisconnect** with empty payload to the TUN device:
+   ```
+   [PI][0x02]
+   ```
+   This is generated by `x25_terminate_link()`, which is called on `NETDEV_DOWN` or when `X25_IFACE_DISCONNECT` is received from the device.
+
+2. Gateway reads the frame. The payload is empty, only the control byte `0x02` is present.
+
+3. Gateway calls `closeAllSessions()`:
+   - For each active session: send CLEAR_REQUEST to the remote peer (cause: `NetworkCongestion` or `OutOfOrder`).
+   - Remove all sessions from the session manager.
+
+4. **No response is sent back to the kernel.** The kernel has already called `x25_kill_by_neigh()` internally, disconnecting all AF_X25 sockets on that interface with `ENETUNREACH`. Any further writes to those sockets will fail.
+
+5. The TUN gateway may continue running and await a new L2 connect handshake (step 6–7 in Use Case 1) before accepting further calls.
+
+---
+
+## Socket Connection Operations
+
+### Open an X.25 Socket Connection
 
 This describes the steps for a DTE application opening an outbound X.25 SVC via an AF_X25 socket.
 
@@ -235,22 +364,9 @@ This describes the steps for a DTE application opening an outbound X.25 SVC via 
    ```
    Kernel allocates an LCI, sets state to `X25_STATE_1` (`TCP_SYN_SENT`), and sends a CALL_REQUEST.
 
-5. **CALL_REQUEST** — Kernel → TUN Gateway (TunHeaderData):
-   ```
-   [PI][0x00][GFI|LCI_H, LCI_L, 0x0B, addr_block, fac_block, CUD...]
-   ```
-   Gateway relays to the remote DCE over XOT.
-
-6. **CALL_ACCEPTED** — Remote DCE → TUN Gateway (via XOT) → Kernel (TunHeaderData):
-   ```
-   [PI][0x00][GFI|LCI_H, LCI_L, 0x0F, addr_block, fac_block]
-   ```
-   Kernel state machine (`x25_state1_machine`) transitions to `X25_STATE_3` / `TCP_ESTABLISHED`.
-   `connect()` returns 0 (or the socket becomes readable for non-blocking callers).
-
 ---
 
-### 3. Close an X.25 Connection
+### Close an X.25 Socket Connection
 
 This describes the DTE-initiated close sequence.
 
@@ -260,86 +376,13 @@ This describes the DTE-initiated close sequence.
 2. If socket is in `X25_STATE_3` (data transfer):
    Kernel clears queues, sends CLEAR_REQUEST, enters `X25_STATE_2` (`TCP_CLOSE`), starts T23 timer.
 
-3. **CLEAR_REQUEST** — Kernel → TUN Gateway (TunHeaderData):
-   ```
-   [PI][0x00][GFI|LCI_H, LCI_L, 0x13, cause, diag]
-   ```
-   Gateway relays to remote DCE over XOT.
-
-4. **CLEAR_CONFIRMATION** — Remote DCE → TUN Gateway → Kernel (TunHeaderData):
-   ```
-   [PI][0x00][GFI|LCI_H, LCI_L, 0x17]
-   ```
-   Kernel `x25_state2_machine` calls `x25_disconnect()`, moves to `X25_STATE_0`, socket is freed.
-
-5. If T23 expires (180 s default) with no confirmation: kernel destroys socket unconditionally.
+3. If T23 expires (180 s default) with no confirmation: kernel destroys socket unconditionally.
 
 ---
 
-### 4. Receive a Notification that an X.25 Connection Was Closed Remotely and Clean Up
+### Receive a Notification that an X.25 Connection Was Closed Remotely and Clean Up
 
-The remote DCE initiates clearing.
-
-1. **CLEAR_REQUEST** — Remote DCE → TUN Gateway (via XOT):
-   Gateway writes to TUN as TunHeaderData:
-   ```
-   [PI][0x00][GFI|LCI_H, LCI_L, 0x13, cause, diag]
-   ```
-
-2. Kernel `x25_state3_machine` receives CLEAR_REQUEST:
-   - Sends **CLEAR_CONFIRMATION** back via TunHeaderData: `[PI][0x00][GFI|LCI_H, LCI_L, 0x17]`
-   - Calls `x25_disconnect(sk, 0, cause, diag)` → socket moves to `X25_STATE_0`, `sk_state = TCP_CLOSE`
-   - Wakes any blocked `recv()` with EOF or error.
-
-3. Gateway reads **CLEAR_CONFIRMATION** from TUN (TunHeaderData). Gateway forwards CLR_CONF to remote, removes the LCI mapping from the session manager.
-
-4. Application on the socket receives EOF or error from `recv()`/`recvmsg()`, then calls `close(fd)`.
-
----
-
-### 5. Receive a Notification that an X.25 Packet Socket Was Disconnected Remotely and Clean Up
-
-The link layer (L2) is terminated by the kernel. This affects all connections on the interface.
-
-1. Kernel sends **TunHeaderDisconnect** with empty payload to the TUN device:
-   ```
-   [PI][0x02]
-   ```
-   This is generated by `x25_terminate_link()`, which is called on `NETDEV_DOWN` or when `X25_IFACE_DISCONNECT` is received from the device.
-
-2. Gateway reads the frame. The payload is empty, only the control byte `0x02` is present.
-
-3. Gateway calls `closeAllSessions()`:
-   - For each active session: send CLEAR_REQUEST to the remote XOT peer (cause: `NetworkCongestion` or `OutOfOrder`).
-   - Remove all sessions from the session manager.
-
-4. **No response is sent back to the kernel.** The kernel has already called `x25_kill_by_neigh()` internally, disconnecting all AF_X25 sockets on that interface with `ENETUNREACH`. Any further writes to those sockets will fail.
-
-5. The TUN gateway may continue running and await a new L2 connect handshake (step 6–7 in Use Case 1) before accepting further calls.
-
----
-
-### 6. Clear All Connections on a Packet Socket and Shut Down
-
-Gateway-initiated graceful shutdown.
-
-1. For each active session in the session manager:
-   a. Send CLEAR_REQUEST to the remote XOT peer (over TCP) with an appropriate cause code.
-   b. Remove the session from the session manager.
-
-2. Send **TunHeaderDisconnect** to the kernel to instruct it to close all connections on the packet socket:
-   ```
-   write(tun_fd, [0x00, 0x00, 0x08, 0x05, 0x02])
-   ```
-   The kernel calls `x25_link_terminated()` → `x25_kill_by_neigh()` → disconnects all remaining AF_X25 sockets on this interface with `ENETUNREACH`.
-
-3. Close the TUN file descriptor:
-   ```
-   close(tun_fd)
-   ```
-   The kernel fires `NETDEV_UNREGISTER`, cleaning up neighbor and route entries.
-
----
+1. Application on the socket receives EOF or error from `recv()`/`recvmsg()`, then calls `close(fd)`.
 
 ## Low Level Operations
 
