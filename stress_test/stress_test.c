@@ -13,6 +13,8 @@
 #include <sys/time.h>
 #include <limits.h>
 #include <signal.h>
+#include <poll.h>
+#include <fcntl.h>
 
 static _Thread_local unsigned int thread_seed;
 
@@ -43,6 +45,7 @@ typedef struct {
     atomic_long short_receive;
     atomic_long write_error;
     atomic_long accept_error;
+    atomic_long connect_timeout;
 } stats_t;
 
 stats_t global_stats;
@@ -59,6 +62,7 @@ typedef struct {
     bool is_receiver;
     int window_size;
     int packet_size;
+    int connect_timeout_ms;
 } config_t;
 
 config_t cfg;
@@ -229,7 +233,10 @@ void *sender_thread(void *arg) {
         raddr.sx25_family = AF_X25;
         snprintf(raddr.sx25_addr.x25_addr, sizeof(raddr.sx25_addr.x25_addr), "%s", target_addr);
 
-        if (connect(sock, (struct sockaddr *)&raddr, sizeof(raddr)) < 0) {
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+        int connect_ret = connect(sock, (struct sockaddr *)&raddr, sizeof(raddr));
+        if (connect_ret < 0 && errno != EINPROGRESS) {
             atomic_fetch_add(&global_stats.calls_failed, 1);
             char prefix[128];
             snprintf(prefix, sizeof(prefix), "Thread %d: Call from %s to %s failed", thread_id, current_local, target_addr);
@@ -238,6 +245,31 @@ void *sender_thread(void *arg) {
             usleep(cfg.backoff_ms * 1000);
             continue;
         }
+        if (connect_ret < 0) {
+            struct pollfd pfd = { .fd = sock, .events = POLLOUT };
+            int poll_ret = poll(&pfd, 1, cfg.connect_timeout_ms);
+            if (poll_ret == 0) {
+                atomic_fetch_add(&global_stats.connect_timeout, 1);
+                atomic_fetch_add(&global_stats.calls_failed, 1);
+                close(sock);
+                continue;
+            }
+            if (poll_ret < 0 || !(pfd.revents & POLLOUT)) {
+                atomic_fetch_add(&global_stats.calls_failed, 1);
+                close(sock);
+                usleep(cfg.backoff_ms * 1000);
+                continue;
+            }
+            int so_err = 0;
+            socklen_t so_err_len = sizeof(so_err);
+            if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_err, &so_err_len) < 0 || so_err != 0) {
+                atomic_fetch_add(&global_stats.calls_failed, 1);
+                close(sock);
+                usleep(cfg.backoff_ms * 1000);
+                continue;
+            }
+        }
+        fcntl(sock, F_SETFL, flags);
 
         record_facilities(sock);
         
@@ -420,6 +452,7 @@ void print_summary(double duration) {
     printf("Short Receives: %ld\n", atomic_load(&global_stats.short_receive));
     printf("Write Errors: %ld\n", atomic_load(&global_stats.write_error));
     printf("Accept Errors: %ld\n", atomic_load(&global_stats.accept_error));
+    printf("Connect Timeouts: %ld\n", atomic_load(&global_stats.connect_timeout));
 
     int min_pin = atomic_load(&global_stats.min_pacsize_in);
     int max_pin = atomic_load(&global_stats.max_pacsize_in);
@@ -458,6 +491,7 @@ int main(int argc, char *argv[]) {
     cfg.is_receiver = false;
     cfg.window_size = 4;
     cfg.packet_size = 512;
+    cfg.connect_timeout_ms = 10000;
 
     atomic_init(&global_stats.min_pacsize_in, INT_MAX);
     atomic_init(&global_stats.min_pacsize_out, INT_MAX);
@@ -465,7 +499,7 @@ int main(int argc, char *argv[]) {
     atomic_init(&global_stats.min_winsize_out, INT_MAX);
 
     int opt;
-    while ((opt = getopt(argc, argv, "N:l:d:b:T:n:ra:W:P:")) != -1) {
+    while ((opt = getopt(argc, argv, "N:l:d:b:T:n:ra:W:P:C:")) != -1) {
         switch (opt) {
             case 'N': cfg.num_threads = atoi(optarg); break;
             case 'l': cfg.buffer_size = atoi(optarg); break;
@@ -485,8 +519,9 @@ int main(int argc, char *argv[]) {
             case 'T': cfg.run_time_s = atoi(optarg); break;
             case 'n': cfg.max_calls = atoi(optarg); break;
             case 'r': cfg.is_receiver = true; break;
+            case 'C': cfg.connect_timeout_ms = atoi(optarg); break;
             default:
-                fprintf(stderr, "Usage: %s [-N threads] [-l bufsize] [-d start,end] [-b backoff_ms] [-T runtime] [-n maxcalls] [-r (receiver mode)] [-a local_addr] [-W window_size] [-P packet_size]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-N threads] [-l bufsize] [-d start,end] [-b backoff_ms] [-T runtime] [-n maxcalls] [-r (receiver mode)] [-a local_addr] [-W window_size] [-P packet_size] [-C connect_timeout_ms]\n", argv[0]);
                 exit(EXIT_FAILURE);
         }
     }

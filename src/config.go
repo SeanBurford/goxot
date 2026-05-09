@@ -11,17 +11,20 @@ import (
 )
 
 const (
-	LciStartDefault = 1024
-	LciEndDefault   = 2048
-	PortDefault     = 1998
+	LciStartDefault     = 1024
+	LciEndDefault       = 2048
+	PortDefault         = 1998
+	TCPKeepaliveDefault = 30 // seconds; applied when "tcp-keepalive-interval" is absent from config
 )
 
 type XotServerConfig struct {
-	Prefix     string `json:"prefix"`      // X.121 prefix (e.g., "123/3")
-	IP         string `json:"ip"`          // XOT server IP
-	Port       int    `json:"port"`        // Port (default PortDefault)
-	DNSPattern string `json:"dns_pattern"` // Regex for DNS lookup
-	DNSName    string `json:"dns_name"`    // DNS name template (e.g., "\2.\1.example.org")
+	Prefix              string `json:"prefix"`               // X.121 prefix (e.g., "123/3")
+	IP                  string `json:"ip"`                   // XOT server IP
+	Port                int    `json:"port"`                 // Port (default PortDefault)
+	DNSPattern          string `json:"dns_pattern"`          // Regex for DNS lookup
+	DNSName             string `json:"dns_name"`             // DNS name template (e.g., "\2.\1.example.org")
+	TCPKeepaliveInterval *int  `json:"tcp-keepalive-interval"` // TCP keepalive idle seconds; nil→30, 0→disabled
+	X25KeepaliveInterval int   `json:"x25-keepalive-interval"` // X.25 INTERRUPT keepalive seconds; 0→disabled (default)
 }
 
 type TunConfig struct {
@@ -113,6 +116,10 @@ func (cm *ConfigManager) Reload() (bool, error) {
 		srv := cfg.Servers[i]
 		if srv.Port == 0 {
 			srv.Port = PortDefault
+		}
+		if srv.TCPKeepaliveInterval == nil {
+			v := TCPKeepaliveDefault
+			srv.TCPKeepaliveInterval = &v
 		}
 
 		hasIP := srv.IP != ""

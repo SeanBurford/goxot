@@ -54,6 +54,8 @@ const (
 	PktTypeREJ              = 0x09
 	PktTypeResetRequest     = 0x1B
 	PktTypeResetConfirm     = 0x1F
+	PktTypeInterrupt        = 0x23
+	PktTypeInterruptConfirm = 0x27
 	PktTypeRestartRequest   = 0xFB
 	PktTypeRestartConfirm   = 0xFF
 	PktTypeDiagnostic       = 0xF1
@@ -134,6 +136,10 @@ func GetPacketTypeName(pktType byte) string {
 		return "RESET_REQ"
 	case PktTypeResetConfirm:
 		return "RESET_CONF"
+	case PktTypeInterrupt:
+		return "INTERRUPT"
+	case PktTypeInterruptConfirm:
+		return "INTERRUPT_CONF"
 	case PktTypeRestartRequest:
 		return "RESTART_REQ"
 	case PktTypeRestartConfirm:
@@ -386,5 +392,16 @@ func CreateClearRequest(lci uint16, cause byte, diag byte) *X25Packet {
 		LCI:     lci,
 		Type:    PktTypeClearRequest,
 		Payload: []byte{cause, diag},
+	}
+}
+
+// CreateInterrupt builds a 4-byte X.25 INTERRUPT packet for the given LCI.
+// data is the single interrupt data octet (any value; conventionally 0x01).
+func CreateInterrupt(lci uint16, data byte) []byte {
+	return []byte{
+		(GFIStandard << 4) | byte(lci>>8),
+		byte(lci),
+		PktTypeInterrupt,
+		data,
 	}
 }

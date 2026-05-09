@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -50,7 +51,16 @@ func main() {
                 xot.StartStatsServer(actualStatsPort)
         }
 
-	ln, err := net.Listen("tcp", *listenAddr)
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+					log.Printf("Warning: SO_REUSEADDR failed: %v", err)
+				}
+			})
+		},
+	}
+	ln, err := lc.Listen(context.Background(), "tcp", *listenAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen on %s: %v", *listenAddr, err)
 	}
@@ -201,7 +211,8 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		var destName string
 		var destIf string
 
-		if cm.GetServer(called) != nil {
+		srv := cm.GetServer(called)
+		if srv != nil {
 			// Route to xot-gateway
 			destConn, err = net.Dial("unixpacket", "/tmp/xot_gwy.sock")
 			destName = "GWY"
@@ -223,6 +234,12 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
 			xot.SendXot("xot", conn, clr.Serialize())
 			return
+		}
+
+		if srv != nil && srv.TCPKeepaliveInterval != nil && *srv.TCPKeepaliveInterval > 0 {
+			if kaErr := xot.SetTCPKeepalive(conn, time.Duration(*srv.TCPKeepaliveInterval)*time.Second); kaErr != nil {
+				log.Printf("%s: Failed to set TCP keepalive: %v", source, kaErr)
+			}
 		}
 		
 		// Inner function to handle the relay so we can defer destConn.Close() properly

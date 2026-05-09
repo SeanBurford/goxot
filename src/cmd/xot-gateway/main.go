@@ -215,6 +215,11 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
 				xot.SetNoDelay(c)
+				if srv.TCPKeepaliveInterval != nil && *srv.TCPKeepaliveInterval > 0 {
+					if kaErr := xot.SetTCPKeepalive(c, time.Duration(*srv.TCPKeepaliveInterval)*time.Second); kaErr != nil {
+						log.Printf("%s: Failed to set TCP keepalive: %v", source, kaErr)
+					}
+				}
 				remoteConn = c
 				connectedIP = ip
 				break
@@ -254,7 +259,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			}
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
-			
+
+			var lastActivity atomic.Int64
+			var interruptProbeInFlight atomic.Bool
+			callEstablished := make(chan struct{})
+			var callEstablishedOnce sync.Once
+			lastActivity.Store(time.Now().UnixNano())
+
 			// Relay from remote to local
 			go func() {
 				xot.ThreadsActive.Add("relay_remote_to_local", 1)
@@ -284,6 +295,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						xot.LogTraceRaw(dest, source, d)
 					}
 
+					lastActivity.Store(time.Now().UnixNano())
 					xot.PacketsHandled.Add(pktTypeName, 1)
 					pLCI := xot.GetLCI(d)
 					if pLCI != lci {
@@ -292,7 +304,12 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 					}
 
 					if pktType == xot.PktTypeCallConnected {
+						callEstablishedOnce.Do(func() { close(callEstablished) })
 						log.Printf("%s: Call connected on LCI %d", source, lci)
+					} else if pktType == xot.PktTypeInterruptConfirm {
+						if interruptProbeInFlight.Swap(false) {
+							continue
+						}
 					} else if pktType == xot.PktTypeClearRequest || pktType == xot.PktTypeClearConfirm {
 						log.Printf("%s: Call cleared on LCI %d (type: %s)", source, lci, pktTypeName)
 						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
@@ -337,6 +354,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						xot.LogTraceRaw(source, dest, d)
 					}
 
+					lastActivity.Store(time.Now().UnixNano())
 					xot.PacketsHandled.Add(pktTypeName, 1)
 					pLCI := xot.GetLCI(d)
 					if pLCI != lci {
@@ -358,6 +376,47 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 					xot.SendXot("xot", remoteConn, d)
 				}
 			}()
+
+			if srv.X25KeepaliveInterval > 0 {
+				relayWg.Add(1)
+				go func() {
+					xot.ThreadsActive.Add("x25_keepalive", 1)
+					defer xot.ThreadsActive.Add("x25_keepalive", -1)
+					defer relayWg.Done()
+					select {
+					case <-callEstablished:
+					case <-relayQuit:
+						return
+					case <-stop:
+						return
+					}
+					interval := time.Duration(srv.X25KeepaliveInterval) * time.Second
+					ticker := time.NewTicker(interval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ticker.C:
+							if time.Since(time.Unix(0, lastActivity.Load())) >= interval {
+								if interruptProbeInFlight.Load() {
+									log.Printf("%s: X.25 keepalive timed out on LCI %d, closing connection", source, lci)
+									closeRelay()
+									return
+								}
+								interruptProbeInFlight.Store(true)
+								probe := xot.CreateInterrupt(lci, 0x01)
+								if *trace {
+									log.Printf("%s: X.25 keepalive INTERRUPT sent on LCI %d", source, lci)
+								}
+								xot.SendXot("xot", remoteConn, probe)
+							}
+						case <-relayQuit:
+							return
+						case <-stop:
+							return
+						}
+					}
+				}()
+			}
 
 			select {
 			case <-relayQuit:

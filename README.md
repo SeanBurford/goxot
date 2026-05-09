@@ -66,12 +66,16 @@ Example `config.json`:
     {
       "prefix": "701",
       "ip": "192.168.1.1",
-      "port": 1998
+      "port": 1998,
+      "tcp-keepalive-interval": 30,
+      "x25-keepalive-interval": 0
     },
     {
       "prefix": "123",
       "dns_name": "\\2.\\1.example.org",
-      "dns_pattern": "^(...)(...)"
+      "dns_pattern": "^(...)(...)$",
+      "tcp-keepalive-interval": 30,
+      "x25-keepalive-interval": 60
     }
   ]
 }

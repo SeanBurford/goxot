@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"syscall"
+	"time"
 )
 
 var (
@@ -45,6 +46,20 @@ func SetNoDelay(conn net.Conn) error {
 		return tcp.SetNoDelay(true)
 	}
 	return nil
+}
+
+// SetTCPKeepalive enables TCP keepalive on conn with the given idle interval.
+// interval=0 is a no-op. Has no effect on non-TCP connections.
+// On Linux, SetKeepAlivePeriod sets TCP_KEEPIDLE (time before first probe).
+func SetTCPKeepalive(conn net.Conn, interval time.Duration) error {
+	tcp, ok := conn.(*net.TCPConn)
+	if !ok || interval <= 0 {
+		return nil
+	}
+	if err := tcp.SetKeepAlive(true); err != nil {
+		return err
+	}
+	return tcp.SetKeepAlivePeriod(interval)
 }
 
 func isPacketConn(conn net.Conn) bool {
