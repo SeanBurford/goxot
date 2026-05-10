@@ -15,7 +15,7 @@ Standard POSIX socket calls are used:
 *   **Addressing**: Uses `struct sockaddr_x25`.
 *   **Constraint**: A socket **must** be bound before `connect()` is called. Autobinding is not supported (`af_x25.c:810`).
 
-### AF\_X25 Socket Connection Operations
+### AF\_X25 Socket Operations
 
 #### Open a Connection
 
@@ -27,7 +27,7 @@ This describes the steps for a DTE application opening an outbound X.25 SVC via 
    ```
    Socket is in `X25_STATE_0` / `TCP_CLOSE`.
 
-2. Optionally configure facilities (must be done before connect, while socket is in `TCP_CLOSE`):
+2. Optionally configure facilities (`SIOCX25SFACILITIES`), DTE facilities (`SIOCX25SDTEFACILITIES`), Accept Approval (`SIOCX25CALLACCPTAPPRV`) and Call User Data (`SIOCX25SCALLUSERDATA`, `SIOCX25SCUDMATCHLEN`).  These must be set before connect, while socket is in `TCP_CLOSE`:
    ```c
    ioctl(sockfd, SIOCX25SFACILITIES, &fac);
    ```
@@ -43,6 +43,8 @@ This describes the steps for a DTE application opening an outbound X.25 SVC via 
    connect(sockfd, &dst_sockaddr_x25, sizeof(dst_sockaddr_x25));
    ```
    Kernel allocates an LCI, sets state to `X25_STATE_1` (`TCP_SYN_SENT`), and sends a CALL\_REQUEST.
+
+If you're interested in what facilities were negotiated, use `SIOCX25GFACILITIES` to retrieve them after `connect()` or `accept()`.
 
 ---
 
@@ -70,6 +72,13 @@ owner.pid = syscall(SYS_gettid); // Get current thread's TID
 fcntl(sockfd, F_SETOWN_EX, &owner);
 ```
 
+The X.25 Q-Bit (Qualified Data) indicates that a data packet is meant for packet layer control rather than user data.  If you want to send/receive the Q-Bit in data packet headers, you need to set `X25_QBITINCL` socket option.  With this option enabled, the first byte of each send and receive buffer contains the Q-Bit flag (1 = Q-Bit set, 0 = Q-Bit clear).
+
+```c
+int one = 1;
+setsockopt(sockfd, SOL_X25, X25_QBITINCL, &one, sizeof(one));
+```
+
 ---
 
 #### Close a Connection
@@ -93,53 +102,9 @@ This describes the DTE-initiated close sequence.
 
 Note that applications can choose to `signal(SIGPIPE, SIG_IGN)` and handle the error code returned by `read()` instead of processing `SIGPIPE`
 
-## X.25 over TUN (ARPHRD\_X25)
+## AF\_X25 Socket IOCTLs
 
-Software can interface with the kernel by creating a TUN device and setting its link type to `ARPHRD_X25` (value 271). This tells the kernel to treat the interface as a native X.25 packet device.
-
-### Encapsulation and Handshake
-In order to provide consistent detection of X.25 packets and maintain the kernel state machine for connections, the TUN device must be opened **without** `IFF_NO_PI` so that the 4-byte Protocol Information header is included in every frame.  PI packets exchanged with the TUN device include a 4-byte PI header (`[0x00, 0x00, 0x08, 0x05]`) followed by a 1-byte control header.
-
-#### Control Headers
-The following headers are defined (source: `net/x25/x25_dev.c`, constants from `include/net/x25device.h`):
-
-| Value | Name | Purpose |
-| :--- | :--- | :--- |
-| `0x00` | `TunHeaderData` | Standard X.25 PLP packet data follows. |
-| `0x01` | `TunHeaderConnect` | Link Layer (L2) connection request/ack. |
-| `0x02` | `TunHeaderDisconnect` | Link Layer (L2) disconnection. |
-| `0x03` | `TunHeaderParam` | Exchange of link parameters. Not used in practice for `ARPHRD_X25`. |
-
-#### The Connect Handshake
-
-When the kernel's X.25 stack needs to transmit a frame and the link is down (`X25_LINK_STATE_0`), it sends a `TunHeaderConnect (0x01)` frame with an empty payload (`x25_dev.c:x25_establish_link`). The gateway **must** respond with an identical `TunHeaderConnect (0x01)` frame. On receiving the echo, the kernel calls `x25_link_established()`, transitions the link to `X25_LINK_STATE_2`, and immediately sends a `RESTART_REQUEST` packet (LCI=0, type `0xFB`) as a `TunHeaderData` frame. The gateway must respond to the `RESTART_REQUEST` with a `RESTART_CONFIRMATION` (LCI=0, type `0xFF`). Only then does the kernel transition to `X25_LINK_STATE_3` and begin forwarding queued packets.
-
-**COMPAT003**: All CALL_REQUESTs (from `connect()`), CALL_ACCEPTEDs (for inbound calls), CLR_REQs, CLR_CONFs, and data frames are queued until STATE_3. They are flushed by `x25_link_control()` (`x25_link.c:124–126`) when STATE_3 is entered.
-
-**COMPAT004**: If the kernel receives a `RESTART_CONFIRMATION` while already in `STATE_3`, it kills all active sockets with `ENETUNREACH`, sends a new `RESTART_REQUEST`, and returns to `STATE_2`.
-
-**COMPAT005**: When the kernel receives a `RESTART_REQUEST` while in `X25_LINK_STATE_3` all AF\_X25 sockets are killed (`ENETUNREACH`), but the link state stays at `STATE_3` and the kernel immediately sends `RESTART_CONFIRMATION`. The kernel also remains in `STATE_3` after this (it does not transition back to `STATE_2`). The gateway reads the resulting `RESTART_CONFIRMATION` from TUN.
-
-#### The Disconnect Handshake
-The kernel sends `TunHeaderDisconnect (0x02)` with an **empty payload** when the link is terminated (`x25_dev.c:x25_terminate_link`). On receipt, the gateway must immediately clean up all active sessions. No echo or response is sent back to the kernel. The kernel has already called `x25_kill_by_neigh()` internally, which disconnects every AF\_X25 socket on that interface with `ENETUNREACH`. Sending CLR_REQ packets back to the kernel after this point is unnecessary.
-
-*   **Interface Shutdown**: Receipt of a `TunHeaderDisconnect (0x02)` (with empty payload) signals a link-layer teardown, and the gateway should immediately close all active sessions associated with that interface. The kernel has already terminated all sockets internally; no CLR_REQ echo to the kernel is needed.
-
-**COMPAT010**: When the TUN fd is closed in Op6 step 3, the kernel fires `NETDEV_DOWN` synchronously during the `close()` call's execution path. `x25_link_terminated()` is called, which calls `x25_kill_by_neigh()`, disconnecting all remaining AF\_X25 sockets with `ENETUNREACH`. This is the same cleanup that writing `TunHeaderDisconnect` in Op6 step 2 achieves.  `SOCK006` recommends writing `TunHeaderDisconnect` before `close()`. The NETDEV_DOWN path means the fd close alone is not unsafe — sockets are cleaned up — but the explicit write provides a deterministic point at which the gateway can complete session teardown before handing off to the process exit path.
-
-#### Kernel Link State Machine
-The kernel maintains an internal link state for each neighbor device (`x25_link.c`):
-
-| State | Name | Description |
-| :--- | :--- | :--- |
-| `X25_LINK_STATE_0` | Down | No link. Frame transmission triggers link establishment. |
-| `X25_LINK_STATE_1` | Connect Sent | Kernel sent TunHeaderConnect, awaiting echo. |
-| `X25_LINK_STATE_2` | Restart Sent | Echo received; RESTART_REQUEST sent, awaiting RESTART_CONFIRMATION. |
-| `X25_LINK_STATE_3` | Operational | RESTART_CONFIRMATION received; ready for data. |
-
-## Linux X.25 IOCTLs
-
-The module supports several IOCTLs for management. All X.25-specific IOCTLs are in the `SIOCPROTOPRIVATE` range starting at `0x89E0`.
+The kernel module supports several IOCTLs for management. All X.25-specific IOCTLs are in the `SIOCPROTOPRIVATE` range starting at `0x89E0`.
 
 ### Complete IOCTL Table
 
@@ -165,8 +130,6 @@ Standard routing IOCTLs used with AF\_X25 sockets:
 | :--- | :--- | :--- |
 | `SIOCADDRT` | `x25_route_struct` | Add a prefix-based route to an interface. Requires `CAP_NET_ADMIN`. |
 | `SIOCDELRT` | `x25_route_struct` | Remove a route. Requires `CAP_NET_ADMIN`. |
-
-## Data Structures
 
 ### `struct sockaddr_x25`
 ```c
@@ -233,11 +196,11 @@ struct x25_subscrip_struct {
 
 `global_facil_mask` gets or sets the neighbour facilities mask:
 
-*  `X25_MASK_REVERSE`: Include `reverse` in created facilities. (default on link device up).
-*  `X25_MASK_THROUGHPUT`: Include `throughput` in created facilities. (default on link device up).
-*  `X25_MASK_PACKET_SIZE`: Include `pacsize_in` and `pacsize_out` in created facilities. (default on link device up).
-*  `X25_MASK_WINDOW_SIZE`: Include `winsize_in` and `winsize_out` in created facilities. (default on link device up).
-*  `X25_MASK_CALLING_AE` / `X25_MASK_CALLED_AE`: Include `X25_MARKER` + `X25_DTE_SERVICES` in created facilities.
+*  `X25_MASK_REVERSE` (0x01): Include `reverse` in created facilities. (default on link device up).
+*  `X25_MASK_THROUGHPUT` (0x02): Include `throughput` in created facilities. (default on link device up).
+*  `X25_MASK_PACKET_SIZE` (0x04): Include `pacsize_in` and `pacsize_out` in created facilities. (default on link device up).
+*  `X25_MASK_WINDOW_SIZE` (0x08): Include `winsize_in` and `winsize_out` in created facilities. (default on link device up).
+*  `X25_MASK_CALLING_AE` (0x10) / `X25_MASK_CALLED_AE` (0x20): Include `X25_MARKER` + `X25_DTE_SERVICES` in created facilities.
 *  `X25_MASK_CALLING_AE`: Include `X25_FAC_CALLING_AE` if it is set when creating facilities.  `dte_facs->calling_ae` can be set with `SIOCX25SDTEFACILITIES`.
 *  `X25_MASK_CALLED_AE`: Include `X25_FAC_CALLED_AE` if it is set when creating facilities.  `dte_facs->called_ae` can be set with `SIOCX25SDTEFACILITIES`.
 
@@ -248,7 +211,17 @@ struct x25_subscrip_struct {
 ### `struct x25_dte_facilities`
 
 ```c
-
+struct x25_dte_facilities {
+        __u16 delay_cumul;    // unused
+        __u16 delay_target;   // unused
+        __u16 delay_max;      // unused
+        __u8 min_throughput;  // unused
+        __u8 expedited;       // unused
+        __u8 calling_len;
+        __u8 called_len;
+        __u8 calling_ae[20];
+        __u8 called_ae[20];
+};
 ```
 
 DTE Facilities can only be set on sockets in TCP_LISTEN or TCP_CLOSE state.
@@ -262,6 +235,50 @@ struct x25_route_struct {
 };
 ```
 ---
+
+## X.25 over TUN (ARPHRD\_X25)
+
+Software can interface with the kernel by creating a TUN device and setting its link type to `ARPHRD_X25` (value 271). This tells the kernel to treat the interface as a native X.25 packet device.
+
+### Encapsulation and Handshake
+In order to provide consistent detection of X.25 packets and maintain the kernel state machine for connections, the TUN device must be opened **without** `IFF_NO_PI` so that the 4-byte Protocol Information header is included in every frame.  PI packets exchanged with the TUN device include a 4-byte PI header (`[0x00, 0x00, 0x08, 0x05]`) followed by a 1-byte control header.
+
+#### Control Headers
+The following headers are defined (source: `net/x25/x25_dev.c`, constants from `include/net/x25device.h`):
+
+| Value | Name | Purpose |
+| :--- | :--- | :--- |
+| `0x00` | `TunHeaderData` | Standard X.25 PLP packet data follows. |
+| `0x01` | `TunHeaderConnect` | Link Layer (L2) connection request/ack. |
+| `0x02` | `TunHeaderDisconnect` | Link Layer (L2) disconnection. |
+| `0x03` | `TunHeaderParam` | Exchange of link parameters. Not used in practice for `ARPHRD_X25`. |
+
+#### The Connect Handshake
+
+When the kernel's X.25 stack needs to transmit a frame and the link is down (`X25_LINK_STATE_0`), it sends a `TunHeaderConnect (0x01)` frame with an empty payload (`x25_dev.c:x25_establish_link`). The gateway **must** respond with an identical `TunHeaderConnect (0x01)` frame. On receiving the echo, the kernel calls `x25_link_established()`, transitions the link to `X25_LINK_STATE_2`, and immediately sends a `RESTART_REQUEST` packet (LCI=0, type `0xFB`) as a `TunHeaderData` frame. The gateway must respond to the `RESTART_REQUEST` with a `RESTART_CONFIRMATION` (LCI=0, type `0xFF`). Only then does the kernel transition to `X25_LINK_STATE_3` and begin forwarding queued packets.
+
+**COMPAT003**: All CALL_REQUESTs (from `connect()`), CALL_ACCEPTEDs (for inbound calls), CLR_REQs, CLR_CONFs, and data frames are queued until STATE_3. They are flushed by `x25_link_control()` (`x25_link.c:124–126`) when STATE_3 is entered.
+
+**COMPAT004**: If the kernel receives a `RESTART_CONFIRMATION` while already in `STATE_3`, it kills all active sockets with `ENETUNREACH`, sends a new `RESTART_REQUEST`, and returns to `STATE_2`.
+
+**COMPAT005**: When the kernel receives a `RESTART_REQUEST` while in `X25_LINK_STATE_3` all AF\_X25 sockets are killed (`ENETUNREACH`), but the link state stays at `STATE_3` and the kernel immediately sends `RESTART_CONFIRMATION`. The kernel also remains in `STATE_3` after this (it does not transition back to `STATE_2`). The gateway reads the resulting `RESTART_CONFIRMATION` from TUN.
+
+#### The Disconnect Handshake
+The kernel sends `TunHeaderDisconnect (0x02)` with an **empty payload** when the link is terminated (`x25_dev.c:x25_terminate_link`). On receipt, the gateway must immediately clean up all active sessions. No echo or response is sent back to the kernel. The kernel has already called `x25_kill_by_neigh()` internally, which disconnects every AF\_X25 socket on that interface with `ENETUNREACH`. Sending CLR_REQ packets back to the kernel after this point is unnecessary.
+
+*   **Interface Shutdown**: Receipt of a `TunHeaderDisconnect (0x02)` (with empty payload) signals a link-layer teardown, and the gateway should immediately close all active sessions associated with that interface. The kernel has already terminated all sockets internally; no CLR_REQ echo to the kernel is needed.
+
+**COMPAT010**: When the TUN fd is closed in Op6 step 3, the kernel fires `NETDEV_DOWN` synchronously during the `close()` call's execution path. `x25_link_terminated()` is called, which calls `x25_kill_by_neigh()`, disconnecting all remaining AF\_X25 sockets with `ENETUNREACH`. This is the same cleanup that writing `TunHeaderDisconnect` in Op6 step 2 achieves.  `SOCK006` recommends writing `TunHeaderDisconnect` before `close()`. The NETDEV_DOWN path means the fd close alone is not unsafe — sockets are cleaned up — but the explicit write provides a deterministic point at which the gateway can complete session teardown before handing off to the process exit path.
+
+#### Kernel Link State Machine
+The kernel maintains an internal link state for each neighbor device (`x25_link.c`):
+
+| State | Name | Description |
+| :--- | :--- | :--- |
+| `X25_LINK_STATE_0` | Down | No link. Frame transmission triggers link establishment. |
+| `X25_LINK_STATE_1` | Connect Sent | Kernel sent TunHeaderConnect, awaiting echo. |
+| `X25_LINK_STATE_2` | Restart Sent | Echo received; RESTART_REQUEST sent, awaiting RESTART_CONFIRMATION. |
+| `X25_LINK_STATE_3` | Operational | RESTART_CONFIRMATION received; ready for data. |
 
 ## TUN Connection Operations
 
