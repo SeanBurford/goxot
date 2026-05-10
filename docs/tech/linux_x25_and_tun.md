@@ -4,7 +4,7 @@ This document describes interfacing with the Linux kernel's X.25 implementation 
 
 ## The Linux X.25 Stack
 
-The Linux kernel supports X.25 over various link layers, including LAPB (standard serial) and TUN (virtual encapsulation, enabling X.25 over TCP - XOT).
+The Linux kernel supports X.25 over various link layers, including LAPB (standard serial) and TUN (virtual encapsulation).
 
 The AF\_X25 socket family that implements the X.25 Packet Layer Protocol (PLP) is the simpler option.  The alternative TUN interface requires that the application implement X.25 packet and protocol handling.
 
@@ -25,17 +25,17 @@ This describes the steps for a DTE application opening an outbound X.25 SVC via 
    ```
    Creates an AF\_X25 socket in `X25_STATE_0` / `TCP_CLOSE`. Initialises internal queues (ack\_queue, fragment\_queue, interrupt queues), default facilities (window size 2, packet size 128), and timers T21/T22/T23/T2. The socket is marked `SOCK_ZAPPED` until bound.
 
-2. Optionally configure facilities (`SIOCX25SFACILITIES`), DTE facilities (`SIOCX25SDTEFACILITIES`), Accept Approval (`SIOCX25CALLACCPTAPPRV`) and Call User Data (`SIOCX25SCALLUSERDATA`, `SIOCX25SCUDMATCHLEN`).  These must be set before connect, while socket is in `TCP_CLOSE`:
+2. Optionally configure facilities using IOCTLs (detailed later); (`SIOCX25SFACILITIES`), DTE facilities (`SIOCX25SDTEFACILITIES`), Accept Approval (`SIOCX25CALLACCPTAPPRV`) and Call User Data (`SIOCX25SCALLUSERDATA`, `SIOCX25SCUDMATCHLEN`).  These must be set before connect, while socket is in `TCP_CLOSE` or `TCP_LISTEN` (returns `EINVAL` otherwise):
    ```c
    ioctl(sockfd, SIOCX25SFACILITIES, &fac);
    ```
-   Sets the facilities (window size, packet size, throughput, reverse charging) to be requested in the outgoing `CALL_REQUEST`. Only callable when the socket is in `TCP_LISTEN` or `TCP_CLOSE` state; returns `EINVAL` otherwise. Values are validated against allowed ranges (`af_x25.c:1468–1494`).
+   `SIOCX25SFACILITIES` sets the facilities (window size, packet size, throughput, reverse charging) to be requested in the outgoing calls or negotiated on incoming calls.  Values are validated against allowed ranges (`af_x25.c:1468–1494`).
 
 3. Bind a source X.121 address:
    ```c
    bind(sockfd, &src_sockaddr_x25, sizeof(src_sockaddr_x25));
    ```
-   Binding is **mandatory** before `connect()`; autobinding is not supported.  Registers the socket's source X.121 address. Adds the socket to the global `x25_list` (protected by `x25_list_lock`), clears `SOCK_ZAPPED`. Must be called before `connect()`. The address must consist only of ASCII digit characters.
+   Binding is **mandatory** before `connect()`; autobinding is not supported.  Registers the socket's source X.121 address. Adds the socket to the global `x25_list` (protected by `x25_list_lock`), clears `SOCK_ZAPPED`. The address must consist only of ASCII digit characters.
 
 4. Connect to the remote address (blocking):
    ```c
@@ -71,7 +71,7 @@ owner.pid = syscall(SYS_gettid); // Get current thread's TID
 fcntl(sockfd, F_SETOWN_EX, &owner);
 ```
 
-The X.25 Q-Bit (Qualified Data) indicates that a data packet is meant for packet layer control rather than user data.  If you want to send/receive the Q-Bit in data packet headers, you need to set `X25_QBITINCL` socket option.  With this option enabled, the first byte of each send and receive buffer contains the Q-Bit flag (1 = Q-Bit set, 0 = Q-Bit clear).
+The X.25 Q-Bit (Qualified Data) indicates that a data packet is meant for packet layer control rather than user data.  If you want to send/receive the Q-Bit in data packet headers, you need to set `X25_QBITINCL` socket option.  With this option enabled, the first byte of each send and receive buffer contains the Q-Bit flag (1 = Q-Bit set, 0 = Q-Bit clear).  If `X25_QBITINCL` is not set, the Q-Bit on received packets is ignored.
 
 ```c
 int one = 1;
@@ -125,14 +125,14 @@ The kernel module supports several IOCTLs for management. All X.25-specific IOCT
 | `SIOCX25CALLACCPTAPPRV` | `0x89EB` | (none) | Enable manual call acceptance mode (clears `X25_ACCPT_APPRV_FLAG`). Socket must be in `TCP_CLOSE`. |
 | `SIOCX25SENDCALLACCPT` | `0x89EC` | (none) | Send a Call Accepted for a manually-held incoming call. Socket must be `TCP_ESTABLISHED`. Requires `SIOCX25CALLACCPTAPPRV` to have been called first. |
 
-Standard routing IOCTLs used with AF\_X25 sockets:
+### Managing X.25 Routes
+
+Standard routing IOCTLs can be used with AF\_X25 sockets:
 
 | IOCTL | Structure | Description |
 | :--- | :--- | :--- |
 | `SIOCADDRT` | `x25_route_struct` | Add a prefix-based route to an interface. Requires `CAP_NET_ADMIN`. |
 | `SIOCDELRT` | `x25_route_struct` | Remove a route. Requires `CAP_NET_ADMIN`. |
-
-### Managing X.25 Routes
 
 `ioctl(sockfd, SIOCADDRT, &x25_route_struct)`:
 
@@ -249,7 +249,7 @@ struct x25_route_struct {
 
 ## X.25 over TUN (ARPHRD\_X25)
 
-Software can interface with the kernel by creating a TUN device and setting its link type to `ARPHRD_X25` (value 271). This tells the kernel to treat the interface as a native X.25 packet device.
+Software can interface with the kernel by creating a TUN device and setting its link type to `ARPHRD_X25`. This tells the kernel to treat the interface as a native X.25 packet device.
 
 ### Encapsulation and Handshake
 In order to provide consistent detection of X.25 packets and maintain the kernel state machine for connections, the TUN device must be opened **without** `IFF_NO_PI` so that the 4-byte Protocol Information header is included in every frame.  PI packets exchanged with the TUN device include a 4-byte PI header (`[0x00, 0x00, 0x08, 0x05]`, referred to as `[PI]` below) followed by a 1-byte control header.
@@ -316,7 +316,7 @@ This establishes a TUN interface ready for X.25 traffic. "PI mode" means the TUN
    ```
    ioctl(tunfd, TUNSETLINK, ARPHRD_X25)
    ```
-   The kernel registers a new neighbor object in `X25_LINK_STATE_0`.  Sets the hardware type of the TUN interface to `ARPHRD_X25` (271). This causes the kernel's AF\_X25 packet handler (`x25_lapb_receive_frame` in `x25_dev.c`) to recognise frames written to this TUN interface as X.25 LAPB frames. It also triggers `NETDEV_POST_TYPE_CHANGE`, which calls `x25_link_device_up()` to register a neighbor object for the device in `X25_LINK_STATE_0`.
+   The kernel registers a new neighbor object in `X25_LINK_STATE_0`.  Sets the hardware type of the TUN interface to `ARPHRD_X25`. This causes the kernel's AF\_X25 packet handler (`x25_lapb_receive_frame` in `x25_dev.c`) to recognise frames written to this TUN interface as X.25 LAPB frames. It also triggers `NETDEV_POST_TYPE_CHANGE`, which calls `x25_link_device_up()` to register a neighbor object for the device in `X25_LINK_STATE_0`.
 
 4. Bring the interface UP (requires setting up a temporary socket for the IOCTL):
    ```
