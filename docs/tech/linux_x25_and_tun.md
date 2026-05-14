@@ -1,6 +1,9 @@
 # Interfacing with Linux X.25 and TUN Interfaces
 
-This document describes interfacing with the Linux kernel's X.25 implementation via the AF\_X25 socket family and TUN network devices.
+This technical document describes interfacing with the Linux kernel's X.25 implementations via either the AF\_X25 socket family or the TUN network devices.  Most projects will only need to select and implement one of these two methods:
+
+*  AF\_X25 sockets: Present a familiar socket interface to get up and running quickly without delving into X.25 packets and handshaking.  Imposes limitations (e.g. on available X.25 Facilities).
+*  TUN: Provides for raw packet creation and handling, but requires the user space code to carefully manage connection state and packet encoding.
 
 ## The Linux X.25 Stack
 
@@ -109,21 +112,22 @@ The kernel module supports several IOCTLs for management. All X.25-specific IOCT
 
 ### Complete IOCTL Table
 
+Code should prefer `import <linux/x25.h>` to get these constants where possible:
+
 | IOCTL | Value | Structure | Description |
 | :--- | :--- | :--- | :--- |
 | `SIOCX25GSUBSCRIP` | `0x89E0` | `x25_subscrip_struct` | Get interface LCI ranges and facility masks. |
 | `SIOCX25SSUBSCRIP` | `0x89E1` | `x25_subscrip_struct` | Set LCI ranges and global facility masks. Requires `CAP_NET_ADMIN`. |
 | `SIOCX25GFACILITIES` | `0x89E2` | `x25_facilities` | Get the negotiated facilities on a connected socket. |
 | `SIOCX25SFACILITIES` | `0x89E3` | `x25_facilities` | Set requested facilities. Socket must be in `TCP_LISTEN` or `TCP_CLOSE` state (`af_x25.c:1465`). |
-| `SIOCX25GDTEFACILITIES` | `0x89E4` | `x25_dte_facilities` | Get DTE (OSI network address extension) facilities. |
-| `SIOCX25SDTEFACILITIES` | `0x89E5` | `x25_dte_facilities` | Set DTE facilities. Socket must be in `TCP_LISTEN` or `TCP_CLOSE` state. |
-| `SIOCX25GCALLUSERDATA` | `0x89E6` | `x25_calluserdata` | Get the Call User Data from an incoming call. |
-| `SIOCX25SCALLUSERDATA` | `0x89E7` | `x25_calluserdata` | Set Call User Data for an outgoing Call Request. |
-| `SIOCX25GCAUSEDIAG` | `0x89E8` | `x25_causediag` | Get the last received Cause/Diagnostic codes. |
-| `SIOCX25SCAUSEDIAG` | `0x89E9` | `x25_causediag` | Set the Cause/Diagnostic for an outgoing Clear packet. |
-| `SIOCX25SCUDMATCHLEN` | `0x89EA` | `x25_subaddr` | Set how many CUD bytes a listening socket matches on. Socket must be in `TCP_CLOSE`. |
-| `SIOCX25CALLACCPTAPPRV` | `0x89EB` | (none) | Enable manual call acceptance mode (clears `X25_ACCPT_APPRV_FLAG`). Socket must be in `TCP_CLOSE`. |
-| `SIOCX25SENDCALLACCPT` | `0x89EC` | (none) | Send a Call Accepted for a manually-held incoming call. Socket must be `TCP_ESTABLISHED`. Requires `SIOCX25CALLACCPTAPPRV` to have been called first. |
+| `SIOCX25GCALLUSERDATA` | `0x89E4` | `x25_calluserdata` | Get the Call User Data from an incoming call. |
+| `SIOCX25SCALLUSERDATA` | `0x89E5` | `x25_calluserdata` | Set Call User Data for an outgoing Call Request. |
+| `SIOCX25GCAUSEDIAG` | `0x89E6` | `x25_causediag` | Get the last received Cause/Diagnostic codes. |
+| `SIOCX25SCUDMATCHLEN` | `0x89E7` | `x25_subaddr` | Set how many CUD bytes a listening socket matches on. Socket must be in `TCP_CLOSE`. |
+| `SIOCX25CALLACCPTAPPRV` | `0x89E8` | (none) | Enable manual call acceptance mode (clears `X25_ACCPT_APPRV_FLAG`). Socket must be in `TCP_CLOSE`. |
+| `SIOCX25SENDCALLACCPT` | `0x89E9` | (none) | Send a Call Accepted for a manually-held incoming call. Socket must be `TCP_ESTABLISHED`. Requires `SIOCX25CALLACCPTAPPRV` to have been called first. |
+| `SIOCX25GDTEFACILITIES` | `0x89EA` | `x25_dte_facilities` | Get DTE (OSI network address extension) facilities. |
+| `SIOCX25SDTEFACILITIES` | `0x89EB` | `x25_dte_facilities` | Set DTE facilities. Socket must be in `TCP_LISTEN` or `TCP_CLOSE` state. |
 
 ### Managing X.25 Routes
 
