@@ -1,6 +1,7 @@
 package xot
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"os"
@@ -41,11 +42,16 @@ type TunGatewayConfig struct {
 	ServiceConfig
 }
 
+type DestinationConfig struct {
+	Facilities map[string]string `json:"facilities"`
+}
+
 type Config struct {
-	TunGateway TunGatewayConfig  `json:"tun-gateway"`
-	XotGateway ServiceConfig     `json:"xot-gateway"`
-	XotServer  ServiceConfig     `json:"xot-server"`
-	Servers    []XotServerConfig `json:"servers"`
+	TunGateway   TunGatewayConfig             `json:"tun-gateway"`
+	XotGateway   ServiceConfig                `json:"xot-gateway"`
+	XotServer    ServiceConfig                `json:"xot-server"`
+	Servers      []XotServerConfig            `json:"servers"`
+	Destinations map[string]DestinationConfig `json:"destinations"`
 }
 
 type ConfigManager struct {
@@ -149,6 +155,9 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	}
 	cfg.Servers = validServers
 
+	// Validate destinations
+	cfg.Destinations = validateDestinations(cfg.Destinations)
+
 	cm.mu.Lock()
 	cm.config = &cfg
 	cm.lastMod = info.ModTime()
@@ -196,6 +205,31 @@ func (cm *ConfigManager) GetServers() []XotServerConfig {
 	return servers
 }
 
+func (cm *ConfigManager) GetDestinations() map[string]DestinationConfig {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if cm.config == nil {
+		return nil
+	}
+	destinations := make(map[string]DestinationConfig)
+	for k, v := range cm.config.Destinations {
+		destinations[k] = v
+	}
+	return destinations
+}
+
+func (cm *ConfigManager) GetDestination(addr string) *DestinationConfig {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if cm.config == nil {
+		return nil
+	}
+	if dest, ok := cm.config.Destinations[addr]; ok {
+		return &dest
+	}
+	return nil
+}
+
 func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
 	// Reload config if it changed on disk
 	if _, err := cm.Reload(); err != nil {
@@ -227,4 +261,47 @@ func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
 		}
 	}
 	return nil
+}
+
+func validateDestinations(destinations map[string]DestinationConfig) map[string]DestinationConfig {
+	validDests := make(map[string]DestinationConfig)
+	for addr, dest := range destinations {
+		validFacs := make(map[string]string)
+		for codeHex, valHex := range dest.Facilities {
+			codeBytes, err := hex.DecodeString(codeHex)
+			if err != nil || len(codeBytes) != 1 {
+				log.Printf("Error in config: invalid facility code %s for destination %s - ignoring", codeHex, addr)
+				continue
+			}
+			valBytes, err := hex.DecodeString(valHex)
+			if err != nil {
+				log.Printf("Error in config: invalid facility value %s for destination %s - ignoring", valHex, addr)
+				continue
+			}
+			code := codeBytes[0]
+			class := code >> 6
+			expectedLen := 0
+			switch class {
+			case 0:
+				expectedLen = 1
+			case 1:
+				expectedLen = 2
+			case 2:
+				expectedLen = 3
+			case 3:
+				// variable
+			}
+
+			if class != 3 && len(valBytes) != expectedLen {
+				log.Printf("Error in config: facility %02x (class %d) expects %d bytes, got %d - ignoring", code, class, expectedLen, len(valBytes))
+				continue
+			}
+			validFacs[codeHex] = valHex
+		}
+		if len(validFacs) > 0 {
+			dest.Facilities = validFacs
+			validDests[addr] = dest
+		}
+	}
+	return validDests
 }

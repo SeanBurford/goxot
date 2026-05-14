@@ -1,6 +1,7 @@
 package xot
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -168,6 +169,142 @@ func (p *X25Packet) GetBaseType() byte {
 		return p.Type & 0x0F
 	}
 	return p.Type
+}
+
+// EncodeBCD encodes a string of hex digits into X.25 address BCD format.
+func EncodeBCD(addr string) []byte {
+	res := make([]byte, (len(addr)+1)/2)
+	for i, r := range addr {
+		val := byte(0)
+		if r >= '0' && r <= '9' {
+			val = byte(r - '0')
+		} else if r >= 'a' && r <= 'f' {
+			val = byte(r - 'a' + 10)
+		} else if r >= 'A' && r <= 'F' {
+			val = byte(r - 'A' + 10)
+		}
+		if i%2 == 0 {
+			res[i/2] |= (val << 4)
+		} else {
+			res[i/2] |= (val & 0x0F)
+		}
+	}
+	return res
+}
+
+// InjectFacilities adds or updates facilities in the packet.
+// It only works on CALL_REQ packets.
+func (p *X25Packet) InjectFacilities(newFac map[string]string) error {
+	if p.Type != PktTypeCallRequest {
+		return fmt.Errorf("not a call request")
+	}
+
+	called, calling, fac, userData, err := p.ParseCallRequest()
+	if err != nil {
+		return err
+	}
+
+	// Build new facilities slice
+	// We'll parse existing facilities into a map to easily update them
+	facMap := make(map[byte][]byte)
+	i := 0
+	for i < len(fac) {
+		code := fac[i]
+		class := code >> 6
+		valLen := 0
+		switch class {
+		case 0:
+			valLen = 1
+		case 1:
+			valLen = 2
+		case 2:
+			valLen = 3
+		case 3:
+			if i+1 >= len(fac) {
+				goto done
+			}
+			valLen = int(fac[i+1])
+			i++
+		}
+		if i+1+valLen > len(fac) {
+			break
+		}
+		facMap[code] = fac[i+1 : i+1+valLen]
+		i += 1 + valLen
+	}
+done:
+
+	// Add/update with new facilities
+	for k, v := range newFac {
+		codeBytes, err := hex.DecodeString(k)
+		if err != nil || len(codeBytes) != 1 {
+			continue
+		}
+		valBytes, err := hex.DecodeString(v)
+		if err != nil {
+			continue
+		}
+		facMap[codeBytes[0]] = valBytes
+	}
+
+	// Re-encode facilities
+	var newFacEncoded []byte
+	for code, val := range facMap {
+		newFacEncoded = append(newFacEncoded, code)
+		class := code >> 6
+		if class == 3 {
+			newFacEncoded = append(newFacEncoded, byte(len(val)))
+		}
+		newFacEncoded = append(newFacEncoded, val...)
+	}
+
+	// Rebuild payload
+	addrLens := byte((len(calling) << 4) | (len(called) & 0x0F))
+	
+	totalAddrBytes := (len(called) + len(calling) + 1) / 2
+	addrData := make([]byte, totalAddrBytes)
+	
+	// Encode addresses
+	encode := func(addr string, startNibble int) {
+		nibble := startNibble
+		for _, r := range addr {
+			val := byte(0)
+			if r >= '0' && r <= '9' {
+				val = byte(r - '0')
+			} else if r >= 'A' && r <= 'F' {
+				val = byte(r - 'A' + 10)
+			} else if r >= 'a' && r <= 'f' {
+				val = byte(r - 'a' + 10)
+			}
+			
+			byteIdx := nibble / 2
+			if byteIdx >= len(addrData) {
+				break
+			}
+			if nibble%2 == 0 {
+				addrData[byteIdx] |= (val << 4)
+			} else {
+				addrData[byteIdx] |= (val & 0x0F)
+			}
+			nibble++
+		}
+	}
+	
+	encode(called, 0)
+	encode(calling, len(called))
+
+	newPayload := make([]byte, 1+len(addrData)+1+len(newFacEncoded)+len(userData))
+	newPayload[0] = addrLens
+	copy(newPayload[1:], addrData)
+	offset := 1 + len(addrData)
+	newPayload[offset] = byte(len(newFacEncoded))
+	offset++
+	copy(newPayload[offset:], newFacEncoded)
+	offset += len(newFacEncoded)
+	copy(newPayload[offset:], userData)
+
+	p.Payload = newPayload
+	return nil
 }
 
 func (p *X25Packet) Serialize() []byte {

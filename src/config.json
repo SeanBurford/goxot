@@ -32,5 +32,12 @@
       "tcp-keepalive-interval": 30,
       "x25-keepalive-interval": 0
     }
-  ]
+  ],
+  "destinations": {
+    "703000": {
+        "facilities": {
+            "c6": "123450"
+        }
+    }
+  }
 }

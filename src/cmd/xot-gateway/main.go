@@ -198,6 +198,17 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			return
 		}
 
+		// Inject facilities if configured for this destination
+		destCfg := cm.GetDestination(called)
+		if destCfg != nil && len(destCfg.Facilities) > 0 {
+			if err := pkt.InjectFacilities(destCfg.Facilities); err != nil {
+				log.Printf("%s: Failed to inject facilities for %s: %v", source, called, err)
+			} else {
+				data = pkt.Serialize()
+				log.Printf("%s: Injected facilities for %s, new len %d", source, called, len(data))
+			}
+		}
+
 		// Resolve destination
 		ips, err := xot.ResolveXotDestination(called, srv)
 		if err != nil {

@@ -46,7 +46,7 @@ Here is a typical setup, combining Linux x.25 routing and TUN devices with XOT:
 
 ## Configuration
 
-The application uses a `config.json` file to define XOT servers.
+The application uses a `config.json` file to define XOT servers, as well as facilities to inject into calls to specific destinations.
 
 Example `config.json`:
 ```json
@@ -77,7 +77,14 @@ Example `config.json`:
       "tcp-keepalive-interval": 30,
       "x25-keepalive-interval": 60
     }
-  ]
+  ],
+  "destinations": {
+    "703000": {
+        "facilities": {
+            "c6": "123450"
+        }
+    }
+  }
 }
 ```
 
