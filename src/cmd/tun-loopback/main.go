@@ -143,16 +143,20 @@ func (sm *sessionManager) isBsideLCIUsed(tunIdx int, lci uint16) bool {
 	return sm.usedLCI[tunIdx][lci]
 }
 
-// removeAllForNode removes all sessions involving tunIdx and returns them.
+// removeAllForNode removes all sessions involving tunIdx (as either A or B side)
+// and returns them.
 func (sm *sessionManager) removeAllForNode(tunIdx int) []*loopSession {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	var dead []*loopSession
-	for key, s := range sm.sessions {
-		if key.tunIdx == tunIdx && (s.tunA == tunIdx && key.lci == s.lciA) {
-			// only collect via the A-side key to avoid duplicates
-			dead = append(dead, s)
+	seen := make(map[*loopSession]bool)
+	for _, s := range sm.sessions {
+		if s.tunA == tunIdx || s.tunB == tunIdx {
+			seen[s] = true
 		}
+	}
+	dead := make([]*loopSession, 0, len(seen))
+	for s := range seen {
+		dead = append(dead, s)
 	}
 	for _, s := range dead {
 		sm.remove(s)
@@ -383,6 +387,10 @@ func (r *relay) handleCallRequest(src *tunNode, srcLCI uint16, payload []byte) {
 	// Allocate a relay LCI on the destination TUN. We check usedLCI under the
 	// write lock to guarantee the allocated LCI is not already taken.
 	r.sm.mu.Lock()
+	// Clean up any stale session on this (src, srcLCI) before creating a new one.
+	if stale := r.sm.get(src.idx, srcLCI); stale != nil {
+		r.sm.remove(stale)
+	}
 	dstLCI, err := dst.allocRelayLCI(func(lci uint16) bool {
 		return r.sm.isBsideLCIUsed(dst.idx, lci)
 	})
@@ -459,16 +467,16 @@ func (r *relay) forwardPacket(src *tunNode, lci uint16, payload []byte, pktType 
 		xot.InterfaceCallConnected.Add(src.name, 1)
 	case xot.PktTypeClearRequest:
 		xot.InterfaceClearRequest.Add(src.name, 1)
-		// Remove before forwarding to avoid race if peer closes immediately.
-		r.sm.mu.Lock()
-		r.sm.remove(s)
-		r.sm.mu.Unlock()
+		// Keep session alive: peer kernel auto-generates CLR_CONF in response,
+		// and we need the session to forward that CLR_CONF back to src.
 		peerNode.writeFrame(tun.HeaderData, payload)
 		return
 	case xot.PktTypeClearConfirm:
 		xot.InterfaceClearConfirm.Add(src.name, 1)
 		r.sm.mu.Lock()
-		r.sm.remove(s)
+		if r.sm.get(src.idx, lci) == s { // ABA: only remove if not already replaced
+			r.sm.remove(s)
+		}
 		r.sm.mu.Unlock()
 		peerNode.writeFrame(tun.HeaderData, payload)
 		return
