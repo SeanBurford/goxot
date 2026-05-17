@@ -17,6 +17,8 @@ xot-gateway
 !xot-gateway/
 tun-gateway
 !tun-gateway/
+tun-loopback
+!tun-loopback/
 
 
 # Test binary, built with `go test -c`

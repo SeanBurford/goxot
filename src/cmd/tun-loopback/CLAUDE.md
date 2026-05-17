@@ -45,19 +45,21 @@ Each address in `routes` gets its own TUN interface (e.g. `tunlb0` for `routes[0
 - `(tunA, lciA)` ↔ `(tunB, lciB)` — source/destination node indices and LCIs
 
 **`sessionManager`** — bidirectional session index:
-- `sessions map[tunLciKey]*loopSession` — keyed by *both* the A-side and B-side `(tunIdx, lci)` pairs
-- `usedLCI []map[uint16]bool` — per-node tracking of relay LCIs in use on the B side
+- `slots [][]atomic.Pointer[loopSession]` — `slots[nodeIdx][lci]`; both A-side (kernel LCI on tunA) and B-side (relay LCI on tunB) entries point to the same session. Direct array indexing — no hash, no mutex on reads.
+- `usedLCI []map[uint16]bool` — per-node tracking of relay LCIs in use on the B side; guarded by `mu`
+- `mu sync.Mutex` — guards writes only (CALL_REQ setup, CLR_CONF teardown); not held on the data-packet read path
 
 ## Goroutine model
 
-One `handleTunRead` goroutine per TUN. All goroutines share the session manager via `sm.mu` (RWMutex).
+One `handleTunRead` goroutine per TUN. Session lookups on the hot path (data packets) are lock-free atomic loads. Writes to the session table (CALL_REQ and CLR_CONF) are serialised by `sm.mu`.
 
 ## Packet relay hot path
 
 `forwardPacket` is called for every non-CALL_REQ packet:
-1. `sm.mu.RLock()` + map lookup → `*loopSession`
+1. `sm.get(nodeIdx, lci)` — single `atomic.Pointer.Load()`, no lock
 2. Two byte writes to remap LCI in-place (payload aliases the read buffer — write completes before next `ReadFrame`)
-3. `peerNode.writeFrame()` — holds `wmu`, writes using pre-allocated `wbuf` via `tun.WriteFrameBuf`
+3. Data fast-path: `(pktType & 0x01) == 0` → `peerNode.writeFrame()` immediately, skipping the control-packet switch
+4. `peerNode.writeFrame()` — holds `wmu`, writes using pre-allocated `wbuf` via `tun.WriteFrameBuf`
 
 ## LCI conflict avoidance
 
@@ -76,4 +78,4 @@ Each TUN's reader goroutine handles the handshake independently:
 
 ## Session teardown order
 
-`forwardPacket` removes sessions **before** writing `CLR_REQ`/`CLR_CONF` to the peer (same pattern as tun-gateway's SESS004): the peer write may cause the peer's reader to emit its own CLEAR, which would re-enter `forwardPacket` and find no session, correctly doing nothing.
+`forwardPacket` removes sessions **only on CLR_CONF**, not on CLR_REQ. This differs from tun-gateway: the peer kernel auto-generates CLR_CONF in response to receiving CLR_REQ, and the relay needs the session alive to forward that CLR_CONF back. On CLR_CONF, an ABA check (`sm.get(src.idx, lci) == s`) is done under `sm.mu` before calling `sm.remove` to avoid removing a replacement session that reused the same LCI slot.

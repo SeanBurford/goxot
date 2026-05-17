@@ -92,66 +92,63 @@ type loopSession struct {
 	lciB uint16 // LCI on tunB (relay-assigned, in forwarded packet)
 }
 
-type tunLciKey struct {
-	tunIdx int
-	lci    uint16
-}
-
-// sessionManager tracks active loopback sessions, indexed bidirectionally.
+// sessionManager tracks active loopback sessions.
+//
+// slots[nodeIdx][lci] maps directly to the session for that (node, LCI) pair.
+// Both the A-side key (kernel LCI on tunA) and the B-side key (relay LCI on tunB)
+// point to the same *loopSession. Reads are lock-free atomic loads; writes are
+// serialised by mu. Using direct array indexing instead of a map eliminates hash
+// overhead and allows the data-packet hot path to avoid any mutex.
 type sessionManager struct {
-	mu       sync.RWMutex
-	sessions map[tunLciKey]*loopSession // both A-side and B-side keys present
-	// usedLCI[tunIdx] tracks which relay LCIs are in use on that node's B side.
-	usedLCI []map[uint16]bool
+	mu      sync.Mutex
+	slots   [][]atomic.Pointer[loopSession] // [nodeIdx][lci]; LCI 0..xot.LCIMax
+	usedLCI []map[uint16]bool               // B-side LCI reservations; guarded by mu
 }
 
 func newSessionManager(numNodes int) *sessionManager {
+	slots := make([][]atomic.Pointer[loopSession], numNodes)
 	used := make([]map[uint16]bool, numNodes)
-	for i := range used {
+	for i := range slots {
+		slots[i] = make([]atomic.Pointer[loopSession], xot.LCIMax+1)
 		used[i] = make(map[uint16]bool)
 	}
-	return &sessionManager{
-		sessions: make(map[tunLciKey]*loopSession),
-		usedLCI:  used,
-	}
+	return &sessionManager{slots: slots, usedLCI: used}
 }
 
-// add inserts a session under both (tunA,lciA) and (tunB,lciB) keys.
-// Must be called with mu held for writing.
+// get returns the session for (nodeIdx, lci) with a single atomic load — no lock.
+func (sm *sessionManager) get(nodeIdx int, lci uint16) *loopSession {
+	return sm.slots[nodeIdx][lci].Load()
+}
+
+// add records s under both its A-side and B-side LCI slots. Must hold mu.
 func (sm *sessionManager) add(s *loopSession) {
-	sm.sessions[tunLciKey{s.tunA, s.lciA}] = s
-	sm.sessions[tunLciKey{s.tunB, s.lciB}] = s
+	sm.slots[s.tunA][s.lciA].Store(s)
+	sm.slots[s.tunB][s.lciB].Store(s)
 	sm.usedLCI[s.tunB][s.lciB] = true
 }
 
-// remove deletes both index entries for s and clears the B-side LCI reservation.
-// Must be called with mu held for writing.
+// remove clears both LCI slots for s and releases the B-side LCI. Must hold mu.
 func (sm *sessionManager) remove(s *loopSession) {
-	delete(sm.sessions, tunLciKey{s.tunA, s.lciA})
-	delete(sm.sessions, tunLciKey{s.tunB, s.lciB})
+	sm.slots[s.tunA][s.lciA].Store(nil)
+	sm.slots[s.tunB][s.lciB].Store(nil)
 	delete(sm.usedLCI[s.tunB], s.lciB)
 }
 
-// get looks up a session by (node index, LCI). Caller holds mu for reading.
-func (sm *sessionManager) get(tunIdx int, lci uint16) *loopSession {
-	return sm.sessions[tunLciKey{tunIdx, lci}]
+// isBsideLCIUsed reports whether lci is reserved on the B side of nodeIdx. Must hold mu.
+func (sm *sessionManager) isBsideLCIUsed(nodeIdx int, lci uint16) bool {
+	return sm.usedLCI[nodeIdx][lci]
 }
 
-// isBsideLCIUsed reports whether lci is already reserved on tunIdx's B side.
-// Caller holds mu for reading.
-func (sm *sessionManager) isBsideLCIUsed(tunIdx int, lci uint16) bool {
-	return sm.usedLCI[tunIdx][lci]
-}
-
-// removeAllForNode removes all sessions involving tunIdx (as either A or B side)
-// and returns them.
-func (sm *sessionManager) removeAllForNode(tunIdx int) []*loopSession {
+// removeAllForNode removes all sessions involving nodeIdx (A or B side) and returns them.
+func (sm *sessionManager) removeAllForNode(nodeIdx int) []*loopSession {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	seen := make(map[*loopSession]bool)
-	for _, s := range sm.sessions {
-		if s.tunA == tunIdx || s.tunB == tunIdx {
-			seen[s] = true
+	for _, nodeSlots := range sm.slots {
+		for i := range nodeSlots {
+			if s := nodeSlots[i].Load(); s != nil && (s.tunA == nodeIdx || s.tunB == nodeIdx) {
+				seen[s] = true
+			}
 		}
 	}
 	dead := make([]*loopSession, 0, len(seen))
@@ -304,7 +301,6 @@ func (r *relay) handleTunRead(n *tunNode) {
 		}
 
 		pktType := xot.GetPacketType(payload)
-		xot.PacketsHandled.Add(xot.GetPacketTypeName(pktType), 1)
 
 		// RESTART handshake.
 		if pktType == xot.PktTypeRestartRequest {
@@ -423,12 +419,10 @@ func (r *relay) handleCallRequest(src *tunNode, srcLCI uint16, payload []byte) {
 }
 
 // forwardPacket relays a non-CALL_REQ packet from src TUN with the given LCI to
-// the peer TUN, remapping the LCI. In the hot path this is a map lookup + two byte
-// writes + a TUN write, all with a single RLock.
+// the peer TUN, remapping the LCI. The hot path (data packets) is a single atomic
+// load + two byte writes + a TUN write with no mutex.
 func (r *relay) forwardPacket(src *tunNode, lci uint16, payload []byte, pktType byte) {
-	r.sm.mu.RLock()
 	s := r.sm.get(src.idx, lci)
-	r.sm.mu.RUnlock()
 
 	if s == nil {
 		// RACE-B: unknown LCI — send CLEAR to prevent kernel socket from lingering.
@@ -460,6 +454,12 @@ func (r *relay) forwardPacket(src *tunNode, lci uint16, payload []byte, pktType 
 	if *trace {
 		log.Printf("%s(%d)→%s(%d) %s", src.name, lci, peerNode.name, peerLCI,
 			xot.GetPacketTypeName(pktType))
+	}
+
+	// Data packets (bit 0 = 0) dominate in steady state — skip the switch entirely.
+	if (pktType & 0x01) == 0 {
+		peerNode.writeFrame(tun.HeaderData, payload)
+		return
 	}
 
 	switch pktType {
