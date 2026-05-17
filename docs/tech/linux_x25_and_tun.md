@@ -16,7 +16,6 @@ The AF\_X25 socket family that implements the X.25 Packet Layer Protocol (PLP) i
 Standard POSIX socket calls are used:
 *   **Socket Creation**: `socket(AF_X25, SOCK_SEQPACKET, 0)`. This is the only supported socket type for AF\_X25. The protocol argument must be 0.
 *   **Addressing**: Uses `struct sockaddr_x25`.
-*   **Constraint**: A socket **must** be bound before `connect()` is called. Autobinding is not supported (`af_x25.c:810`).
 
 #### Open a Connection
 
@@ -38,7 +37,7 @@ This describes the steps for a DTE application opening an outbound X.25 SVC via 
    ```c
    bind(sockfd, &src_sockaddr_x25, sizeof(src_sockaddr_x25));
    ```
-   Binding is **mandatory** before `connect()`; autobinding is not supported.  Registers the socket's source X.121 address. Adds the socket to the global `x25_list` (protected by `x25_list_lock`), clears `SOCK_ZAPPED`. The address must consist only of ASCII digit characters.
+   Registers the socket's source X.121 address. Adds the socket to the global `x25_list` (protected by `x25_list_lock`), clears `SOCK_ZAPPED`. The address must consist only of ASCII digit characters.
 
 4. Connect to the remote address (blocking):
    ```c
@@ -58,7 +57,7 @@ Every `read()` call on a `SOCK_SEQPACKET` socket is expected to read an entire p
 
 X.25 also supports `INTERRUPT` packets, which can contain one byte of data under older specifications (and more or less under newer specs).  To send an interrupt packet, the application should `send(sockfd, buf, len, MSG_OOB)`.
 
-Upon receiving an OOB `INTERRUPT` packet, the Linux kernel sends a `SIGURG` to the socket owner.  The interrupt packet data can then be read with `read(sockfd, buf, len, MSG_OOB)`.  If a particular thread is associated with a socket, that thread should be set as the owner of the socket so that it can handle `SIGURG` (OOB Interrupt data) and `SIGPIPE` (write to closed socket):
+Upon receiving an OOB `INTERRUPT` packet, the Linux kernel sends a `SIGURG` to the socket owner.  The interrupt packet data can then be read with `recv(sockfd, buf, len, MSG_OOB)`.  If a particular thread is associated with a socket, that thread should be set as the owner of the socket so that it can handle `SIGURG` (OOB Interrupt data) and `SIGPIPE` (write to closed socket):
 
 ```c
 #define _GNU_SOURCE // Required for F_SETOWN_EX
@@ -106,18 +105,226 @@ Note that applications can choose to `signal(SIGPIPE, SIG_IGN)` and handle the e
 
 ---
 
+## Standard Socket Functions
+
+This section documents the behaviour of standard libc socket functions when used with `AF_X25` sockets, sourced from the kernel implementation in `net/x25/af_x25.c`.
+
+### `socket()`
+
+```c
+sockfd = socket(AF_X25, SOCK_SEQPACKET, 0);
+```
+
+`SOCK_SEQPACKET` is the only supported socket type; `SOCK_STREAM`, `SOCK_DGRAM`, and others return `ESOCKTNOSUPPORT`. The `protocol` argument must be `0`; any other value returns `EINVAL`. AF_X25 does not support network namespaces: creating a socket outside `init_net` returns `EAFNOSUPPORT`.
+
+---
+
+### `bind()`
+
+```c
+bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+```
+
+Registers the socket's local X.121 address and inserts it into the global socket list.  Binding is **mandatory** before `connect()` — autobinding is not supported (`af_x25.c:800`).  The address string must consist entirely of ASCII decimal digit characters; any non-digit character returns `EINVAL`.  Binding the null X.25 address (`""` / all spaces) is accepted and acts as a wildcard.  The socket may only be bound once; a second `bind()` returns `EINVAL`.
+
+---
+
+### `connect()`
+
+```c
+connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+```
+
+Looks up a route for the destination address, acquires a neighbour, allocates a unique LCI, and sends a `CALL_REQUEST`.  Blocks until `CALL_ACCEPTED` is received or T21 expires (default 200 s).
+
+Returns:
+
+| Return value | Condition |
+| :--- | :--- |
+| `0` | Connection established |
+| `EINPROGRESS` | `O_NONBLOCK` set and connection in progress |
+| `EISCONN` | Socket is already in `TCP_ESTABLISHED` (no reconnect on `SOCK_SEQPACKET`) |
+| `EALREADY` | Connection attempt already in progress (`TCP_SYN_SENT`) |
+| `EINVAL` | Not bound, bad address length, or non-digit characters in address |
+| `ENETUNREACH` | No route to destination |
+| `ECONNREFUSED` | `CLEAR_REQUEST` received from remote |
+
+After `connect()` returns `EINPROGRESS`, poll for `EPOLLOUT` (writeable = connected) or `EPOLLERR`/`EPOLLHUP` (failed).  Call `connect()` a second time after `EPOLLOUT` to retrieve the final result: it returns `0` on success or a negative error code.
+
+---
+
+### `listen()`
+
+```c
+listen(sockfd, backlog);
+```
+
+Places a bound socket into the listening state (`TCP_LISTEN`).  Must be called on a socket that is in `SS_UNCONNECTED` state; returns `EINVAL` otherwise.  `backlog` sets `sk->sk_max_ack_backlog`, which caps the number of pending unaccepted calls queued by the kernel.
+
+---
+
+### `accept()`
+
+```c
+newfd = accept(sockfd, (struct sockaddr *)&peer_addr, &addrlen);
+```
+
+Dequeues one pending incoming call from the listening socket's receive queue.  Blocks until a call arrives (or `sk_rcvtimeo` expires, returning `EAGAIN`).  Returns a new, already-connected socket in `TCP_ESTABLISHED` / `X25_STATE_3`.  The `peer_addr` / `addrlen` arguments are **not** filled in by `accept()` itself — use `getpeername()` on the returned socket to obtain the caller's X.121 address.
+
+When `SIOCX25CALLACCPTAPPRV` has been set on the listening socket, incoming calls land in `X25_STATE_5` and the application must call `ioctl(newfd, SIOCX25SENDCALLACCPT)` before data transfer begins.
+
+---
+
+### `getsockname()` and `getpeername()`
+
+```c
+getsockname(sockfd, (struct sockaddr *)&addr, &addrlen);  /* local address  */
+getpeername(sockfd, (struct sockaddr *)&addr, &addrlen);  /* remote address */
+```
+
+Both are served by `x25_getname()` (`af_x25.c:916`).
+
+- **`getsockname()`** returns `x25->source_addr` as a `struct sockaddr_x25`. Works in any socket state; returns an empty string (`x25_addr[0] == '\0'`) if the socket has not been bound.
+- **`getpeername()`** returns `x25->dest_addr`. Returns `ENOTCONN` unless `sk->sk_state == TCP_ESTABLISHED`. On the server side, `dest_addr` is populated with the caller's address during `x25_rx_call_request()`.
+
+Both calls return `sizeof(struct sockaddr_x25)` (18 bytes) on success.
+
+---
+
+### `send()`, `sendto()`, `sendmsg()`
+
+```c
+send(sockfd, buf, len, MSG_EOR);           /* normal data  */
+send(sockfd, buf, len, MSG_OOB);           /* interrupt packet */
+```
+
+Accepted flags: `MSG_EOR`, `MSG_OOB`, `MSG_DONTWAIT`.  Any other flag combination returns `EINVAL`.
+
+**`MSG_EOR` is required for normal data sends.**  The flag signals that the current record is complete.  Omitting it (i.e., passing `flags = 0`) returns `EINVAL`, because the kernel does not support partial records at the userspace interface.
+
+If the payload exceeds the negotiated packet size (default 128 bytes, log₂-encoded in `x25->facilities.pacsize_out`), `x25_output()` fragments it into multiple X.25 data packets automatically, setting the M-bit on all but the last fragment.  The maximum single `send()` length is 65535 bytes.
+
+**`MSG_OOB`** sends an X.25 INTERRUPT packet.  The payload is silently truncated to 32 bytes.
+
+**`sendto()` with a destination address:** the destination must exactly match the already-connected `x25->dest_addr`; a different address returns `EISCONN`.
+
+`SIGPIPE` is raised (and `EPIPE` returned) if `SEND_SHUTDOWN` is set on the socket — i.e., after `close()` begins teardown or after a remote clear.
+
+---
+
+### `recv()`, `recvfrom()`, `recvmsg()`
+
+```c
+recv(sockfd, buf, sizeof(buf), 0);         /* normal data  */
+recv(sockfd, buf, sizeof(buf), MSG_OOB);   /* interrupt packet */
+```
+
+**Each call returns exactly one reassembled X.25 record** (all M-bit fragments have been coalesced by the kernel before delivery).  `MSG_EOR` is always set in `msg->msg_flags`.
+
+If `buf` is smaller than the record, the excess is silently discarded and `MSG_TRUNC` is set.  Unlike TCP, there is no way to read the remainder in a subsequent call — size the buffer to at least the negotiated `pacsize_in` (default 128 bytes).
+
+**`MSG_OOB`** receives from the interrupt queue.  Returns `EINVAL` if `SOCK_URGINLINE` is set or the interrupt queue is empty.  The kernel strips the X.25 header; if `X25_QBITINCL` is set, a leading zero byte (Q-bit = 0) is prepended.
+
+**`recvfrom()` / `recvmsg()` with a non-NULL `src_addr`:** fills `msg_name` with a `struct sockaddr_x25` containing `x25->dest_addr` (the remote peer address) and sets `msg_namelen` to `sizeof(struct sockaddr_x25)`.
+
+Blocks until data arrives unless `MSG_DONTWAIT` or `O_NONBLOCK` is set, in which case `EAGAIN` is returned if no data is available.
+
+---
+
+### `poll()`, `select()`, `epoll()`
+
+AF_X25 uses the generic `datagram_poll()` (`net/core/datagram.c`).  Events reported:
+
+| Event | Condition |
+| :--- | :--- |
+| `EPOLLIN \| EPOLLRDNORM` | Data in `sk_receive_queue`, or `RCV_SHUTDOWN` set |
+| `EPOLLOUT \| EPOLLWRNORM` | Send buffer has space (`sock_writeable()`) |
+| `EPOLLHUP` | `sk_state == TCP_CLOSE` or both shutdown directions set |
+| `EPOLLRDHUP` | `RCV_SHUTDOWN` set |
+| `EPOLLERR` | `sk_err` non-zero, or error queue non-empty |
+
+**Important:** while a non-blocking `connect()` is in progress (`sk_state == TCP_SYN_SENT`), `datagram_poll()` returns the current mask without `EPOLLOUT`, even if the send buffer is nominally free.  Wait for `EPOLLOUT` to confirm the connection is established, or `EPOLLHUP`/`EPOLLERR` to detect failure.
+
+For interrupt (OOB) data notification, use `fcntl(F_SETOWN_EX)` to direct `SIGURG` to the correct thread (see the Send and Receive Data section above).
+
+---
+
+### `shutdown()`
+
+```c
+shutdown(sockfd, how);  /* returns EOPNOTSUPP */
+```
+
+`shutdown()` is **not supported** (`sock_no_shutdown`); it always returns `EOPNOTSUPP`.  To half-close or fully close a connection, use `close()`.
+
+---
+
+### `close()`
+
+```c
+close(sockfd);
+```
+
+Behaviour depends on the current X.25 state:
+
+| State at `close()` | Kernel action |
+| :--- | :--- |
+| `X25_STATE_0` (idle) or `X25_STATE_2` (awaiting clear confirmation) | `x25_disconnect()` and socket freed immediately |
+| `X25_STATE_1` (awaiting call accepted), `X25_STATE_3` (data transfer), or `X25_STATE_4` (awaiting reset confirmation) | Queues cleared, `CLEAR_REQUEST` sent, T23 started (default 180 s). Socket enters `X25_STATE_2` and is orphaned with `SOCK_DESTROY` set; freed when `CLEAR_CONFIRMATION` arrives or T23 fires |
+| `X25_STATE_5` (call accepted pending) | `CLEAR_REQUEST` sent, `x25_disconnect()` called, socket freed immediately |
+
+---
+
+### `socketpair()`
+
+Not supported; always returns `EOPNOTSUPP`.
+
+---
+
+### `mmap()`
+
+Not supported; always returns `EOPNOTSUPP`.
+
+---
+
+### `getsockopt()` and `setsockopt()`
+
+Only `SOL_X25` / `X25_QBITINCL` is handled.  Any other `level` or `optname` returns `ENOPROTOOPT`.
+
+```c
+int one = 1;
+setsockopt(sockfd, SOL_X25, X25_QBITINCL, &one, sizeof(one));
+```
+
+See the Send and Receive Data section for the effect of `X25_QBITINCL` on the data layout.
+
+---
+
+### `ioctl(TIOCOUTQ)` and `ioctl(TIOCINQ)`
+
+```c
+int bytes;
+ioctl(sockfd, TIOCOUTQ, &bytes);   /* send buffer space remaining */
+ioctl(sockfd, TIOCINQ,  &bytes);   /* bytes in next received packet */
+```
+
+- **`TIOCOUTQ`** returns `sk_sndbuf - sk_wmem_alloc`, clamped to ≥ 0.  This is the remaining space in the send buffer, not the number of bytes pending transmission.
+- **`TIOCINQ`** returns the `skb->len` of the first socket buffer in `sk_receive_queue`, or 0 if the queue is empty.  Because AF_X25 delivers one complete record per `recv()`, this value equals the size of the next record.
+
+---
+
 ## AF\_X25 Socket IOCTLs
 
 The kernel module supports several IOCTLs for management. All X.25-specific IOCTLs are in the `SIOCPROTOPRIVATE` range starting at `0x89E0`.
 
 ### Complete IOCTL Table
 
-Code should prefer `import <linux/x25.h>` to get these constants where possible:
+Code should prefer `#include <linux/x25.h>` to get these constants where possible:
 
 | IOCTL | Value | Structure | Description |
 | :--- | :--- | :--- | :--- |
-| `SIOCX25GSUBSCRIP` | `0x89E0` | `x25_subscrip_struct` | Get interface LCI ranges and facility masks. |
-| `SIOCX25SSUBSCRIP` | `0x89E1` | `x25_subscrip_struct` | Set LCI ranges and global facility masks. Requires `CAP_NET_ADMIN`. |
+| `SIOCX25GSUBSCRIP` | `0x89E0` | `x25_subscrip_struct` | Get interface global facility mask and extended mode setting. |
+| `SIOCX25SSUBSCRIP` | `0x89E1` | `x25_subscrip_struct` | Set global facility mask and extended mode setting. Requires `CAP_NET_ADMIN`. |
 | `SIOCX25GFACILITIES` | `0x89E2` | `x25_facilities` | Get the negotiated facilities on a connected socket. |
 | `SIOCX25SFACILITIES` | `0x89E3` | `x25_facilities` | Set requested facilities. Socket must be in `TCP_LISTEN` or `TCP_CLOSE` state (`af_x25.c:1465`). |
 | `SIOCX25GCALLUSERDATA` | `0x89E4` | `x25_calluserdata` | Get the Call User Data from an incoming call. |
@@ -188,17 +395,19 @@ struct x25_calluserdata {
 };
 ```
 
-For incoming calls, two checks are performed.  First, the call has to match the sockets bound address (`x25_sk(sk)->source_addr`).  Next:
+For incoming calls, the kernel first checks that the call's destination address matches the socket's bound address (or the socket is bound to the null/wildcard address).  It then applies CUD matching via `x25_find_listener()`:
 
-*  If both the call and socket have CUD, and there is a match, route the call to the socket.
-*  If the call OR socket does have CUD, but it does not match or cudlength is larger than the call CUD, track the socket as the `next_best`.
+*  If the socket's `cudmatchlength` (set by `SIOCX25SCUDMATCHLEN`) is zero, or the incoming call CUD is shorter than `cudmatchlength`, the socket is recorded as `next_best` (address-only match).
+*  If `cudmatchlength > 0` and the first `cudmatchlength` bytes of the call CUD match the socket's stored CUD (`calluserdata.cuddata`), the socket is a direct match and the call is routed to it immediately.
+*  If `cudmatchlength > 0` and the call CUD does not match, the socket is skipped entirely (not even `next_best`).
 
-Note that the length of CUD to match against is `cudmatchlength`, which is set by `SIOCX25SCUDMATCHLEN`.  The length provided in the `x25_calluserdata` structure by `SIOCX25SCALLUSERDATA` is effectively ignored except for outgoing calls.
+If no direct CUD match is found, the `next_best` socket (address-only match) receives the call.  Note that `SIOCX25SCALLUSERDATA` sets the CUD used for outgoing calls and stored for comparison; the `cudlength` field in `x25_calluserdata` is only used for outgoing calls. The effective match length is always `cudmatchlength` from `SIOCX25SCUDMATCHLEN`.
 
-If no socket matches, the `next_best` will receive the call (i.e. CUD will be ignored).  This behaviour differs from the code comment ("Note: if a listening socket has cud set it must only get calls with matching cud").  For this reason, if you want to filter incoming calls by Call User Data, you should:
+This behaviour differs from the code comment ("Note: if a listening socket has cud set it must only get calls with matching cud"). In practice, a socket with `cudmatchlength > 0` that fails CUD matching is skipped, but an address-only socket (`cudmatchlength == 0`) will still receive the call as `next_best`. To reliably filter by CUD:
 
-1.  Use `SIOCX25SCALLUSERDATA` to request filtering.
-2.  Use `SIOCX25GCALLUSERDATA` on incoming calls to verify that filtering was effective.
+1.  Set `cudmatchlength` with `SIOCX25SCUDMATCHLEN`.
+2.  Set CUD bytes with `SIOCX25SCALLUSERDATA`.
+3.  After `accept()`, use `SIOCX25GCALLUSERDATA` to verify the call's CUD matched as expected.
 
 ### `struct x25_subscrip_struct`
 ```c
@@ -221,7 +430,7 @@ struct x25_subscrip_struct {
 
 `extended` gets or sets extended window modulus support (0 = 8, 1 = 128), as well as extended GFI and M bit handling.  It does not affect LCI mapping.
 
-`SIOCX25GSUBSCRIP` and `SIOCX25SSUBSCRIP` have no effect unless `device` must be the name of an up `APPHRD_X25` device.  If the device has no neighbour they also have no effect.
+`SIOCX25GSUBSCRIP` and `SIOCX25SSUBSCRIP` require `device` to be the name of an up `ARPHRD_X25` device with a registered neighbour; otherwise they have no effect.
 
 ### `struct x25_dte_facilities`
 
@@ -272,18 +481,16 @@ The following headers are defined (source: `net/x25/x25_dev.c`, constants from `
 
 When the kernel's X.25 stack needs to transmit a frame and the link is down (`X25_LINK_STATE_0`), it sends a `TunHeaderConnect (0x01)` frame with an empty payload (`x25_dev.c:x25_establish_link`). The gateway **must** respond with an identical `TunHeaderConnect (0x01)` frame. On receiving the echo, the kernel calls `x25_link_established()`, transitions the link to `X25_LINK_STATE_2`, and immediately sends a `RESTART_REQUEST` packet (LCI=0, type `0xFB`) as a `TunHeaderData` frame. The gateway must respond to the `RESTART_REQUEST` with a `RESTART_CONFIRMATION` (LCI=0, type `0xFF`). Only then does the kernel transition to `X25_LINK_STATE_3` and begin forwarding queued packets.
 
-**COMPAT003**: All `CALL_REQUEST`s (from `connect()`), `CALL_ACCEPTED`s (for inbound calls), `CLR_REQ`s, `CLR_CONF`s, and data frames are queued until `STATE_3`. They are flushed by `x25_link_control()` (`x25_link.c:124–126`) when `STATE_3` is entered.
+All `CALL_REQUEST`s (from `connect()`), `CALL_ACCEPTED`s (for inbound calls), `CLR_REQ`s, `CLR_CONF`s, and data frames are queued until `STATE_3`. They are flushed by `x25_link_control()` (`x25_link.c:124–126`) when `STATE_3` is entered. (COMPAT003)
 
-**COMPAT004**: If the kernel receives a `RESTART_CONFIRMATION` while already in `STATE_3`, it kills all active sockets with `ENETUNREACH`, sends a new `RESTART_REQUEST`, and returns to `STATE_2`.
+If the kernel receives a `RESTART_CONFIRMATION` while already in `STATE_3`, it kills all active sockets with `ENETUNREACH`, sends a new `RESTART_REQUEST`, and returns to `STATE_2`. (COMPAT004)
 
-**COMPAT005**: When the kernel receives a `RESTART_REQUEST` while in `X25_LINK_STATE_3` all AF\_X25 sockets are killed (`ENETUNREACH`), but the link state stays at `STATE_3` and the kernel immediately sends `RESTART_CONFIRMATION`. The kernel also remains in `STATE_3` after this (it does not transition back to `STATE_2`). The gateway reads the resulting `RESTART_CONFIRMATION` from TUN.
+When the kernel receives a `RESTART_REQUEST` while in `X25_LINK_STATE_3`, all AF\_X25 sockets are killed (`ENETUNREACH`), but the link state stays at `STATE_3` and the kernel immediately sends `RESTART_CONFIRMATION`. The kernel also remains in `STATE_3` after this (it does not transition back to `STATE_2`). The gateway reads the resulting `RESTART_CONFIRMATION` from TUN. (COMPAT005)
 
 #### The Disconnect Handshake
-The kernel sends `TunHeaderDisconnect (0x02)` with an **empty payload** when the link is terminated (`x25_dev.c:x25_terminate_link`). On receipt, the gateway must immediately clean up all active sessions. No echo or response is sent back to the kernel. The kernel has already called `x25_kill_by_neigh()` internally, which disconnects every AF\_X25 socket on that interface with `ENETUNREACH`. Sending `CLR_REQ` packets back to the kernel after this point is unnecessary.
+The kernel sends `TunHeaderDisconnect (0x02)` with an **empty payload** when the link is terminated (`x25_dev.c:x25_link_terminated`). On receipt, the gateway must immediately clean up all active sessions. No echo or response is sent back to the kernel. The kernel has already called `x25_kill_by_neigh()` internally, which disconnects every AF\_X25 socket on that interface with `ENETUNREACH`. Sending `CLR_REQ` packets back to the kernel after this point is unnecessary.
 
-*   **Interface Shutdown**: Receipt of a `TunHeaderDisconnect (0x02)` (with empty payload) signals a link-layer teardown, and the gateway should immediately close all active sessions associated with that interface. The kernel has already terminated all sockets internally; no `CLR_REQ` echo to the kernel is needed.
-
-**COMPAT010**: When the TUN fd is closed in Op6 (clear all connections and shut down) step 3, the kernel fires `NETDEV_DOWN` synchronously during the `close()` call's execution path. `x25_link_terminated()` is called, which calls `x25_kill_by_neigh()`, disconnecting all remaining AF\_X25 sockets with `ENETUNREACH`. This is the same cleanup that writing `TunHeaderDisconnect` in Op6 step 2 achieves.  `SOCK006` recommends writing `TunHeaderDisconnect` before `close()`. The `NETDEV_DOWN` path means the fd close alone is not unsafe — sockets are cleaned up — but the explicit write provides a deterministic point at which the gateway can complete session teardown before handing off to the process exit path.
+When the TUN fd is closed, the TUN driver calls `netif_carrier_off()`, which fires `NETDEV_CHANGE` with no carrier. The X.25 `NETDEV_CHANGE` handler calls `x25_link_terminated()`, which calls `x25_kill_by_neigh()`, disconnecting all remaining AF\_X25 sockets with `ENETUNREACH`. This is the same cleanup that writing `TunHeaderDisconnect` achieves. Writing `TunHeaderDisconnect` before closing the fd is still preferable: it provides a deterministic point at which the gateway can complete session teardown before handing off to the process exit path.
 
 #### Kernel Link State Machine
 The kernel maintains an internal link state for each neighbor device (`x25_link.c`):
@@ -326,7 +533,7 @@ This establishes a TUN interface ready for X.25 traffic. "PI mode" means the TUN
    ```
    ioctl(sockfd, SIOCSIFFLAGS, ifr)  /* flags |= IFF_UP | IFF_RUNNING */
    ```
-   Brings the network interface up. The kernel fires `NETDEV_UP`, which for `ARPHRD_X25` devices re-registers the neighbor (if not already present). The interface is now visible to the X.25 routing layer but the L2 link is still in `X25_LINK_STATE_0`.
+   Brings the network interface up operationally. Note: `NETDEV_UP` is not handled by the X.25 stack; the neighbour object was already registered during the `TUNSETLINK` step (via `NETDEV_POST_TYPE_CHANGE`). The interface is now visible to the X.25 routing layer but the L2 link is still in `X25_LINK_STATE_0`.
 
 5. Optionally add X.25 routes (requires `CAP_NET_ADMIN`; uses a temporary AF\_X25 socket):
    ```
@@ -339,9 +546,7 @@ This establishes a TUN interface ready for X.25 traffic. "PI mode" means the TUN
 
    Gateway → Kernel: `[PI][0x01]` (echo TunHeaderConnect back)
 
-   Kernel transitions to `X25_LINK_STATE_2` and sends `RESTART_REQUEST`.
-
-   Echos the kernel's `X25_IFACE_CONNECT` signal. In `x25_link.c:x25_link_established()`, when this echo is received, the kernel transitions the neighbor from `X25_LINK_STATE_0/1` to `X25_LINK_STATE_2` and immediately sends an X.25 `RESTART_REQUEST` (LCI=0) as a `TunHeaderData` frame. Any frames queued while the link was down remain queued until `X25_LINK_STATE_3`.
+   Kernel transitions to `X25_LINK_STATE_2` and sends `RESTART_REQUEST`. Any frames queued while the link was down remain queued until `X25_LINK_STATE_3`.
 
 7. **L3 Restart Handshake**:
 
@@ -425,16 +630,14 @@ The remote DCE initiates clearing.
    ```
    [PI][0x00][GFI|LCI_H, LCI_L, 0x13, cause, diag]
    ```
-   Generated by `x25_write_internal(sk, X25_CLEAR_REQUEST)` in response to `close(sockfd)` when the socket is in a connected state. The cause and diagnostic bytes come from `x25->causediag`. The socket transitions to `X25_STATE_2` and starts T23. The gateway must relay this to the remote peer.
+   The remote peer has initiated clearing. The gateway decodes the CLEAR_REQUEST from the remote DCE and writes it to the kernel via TUN. The kernel's `x25_state3_machine` receives it and processes the remote-initiated clear.
 
 2. Kernel `x25_state3_machine` receives `CLEAR_REQUEST`:
    - Sends **CLEAR_CONFIRMATION** back via TunHeaderData: `[PI][0x00][GFI|LCI_H, LCI_L, 0x17]`
    - Calls `x25_disconnect(sk, 0, cause, diag)` → socket moves to `X25_STATE_0`, `sk_state = TCP_CLOSE`
    - Wakes any blocked `recv()` with EOF or error.
-   `CLEAR_CONFIRMATION` is generated in response to receiving a `CLEAR_REQUEST` from the gateway (remote-initiated clear). The socket's state machine (`x25_state3_machine`) calls `x25_write_internal(sk, X25_CLEAR_CONFIRMATION)` and then `x25_disconnect()`. `x25_disconnect()` clears queues, stops timers, sets LCI to 0, sets state to `X25_STATE_0`, and wakes waiting processes.
 
-3. Gateway reads **CLEAR_CONFIRMATION** from TUN (TunHeaderData). Gateway forwards `CLR_CONF` to remote, removes the LCI mapping from the session manager.
-   The gateway sends `CLR_CONF` back to the kernel in response to a kernel-originated `CLR_REQ` (i.e., when the kernel clears a connection locally and the gateway is notified). This unblocks any call in `X25_STATE_2` and allows the kernel to destroy the socket. Without this confirmation, the kernel waits for T23 to fire.
+3. Gateway reads **CLEAR_CONFIRMATION** from TUN (TunHeaderData). Gateway forwards `CLR_CONF` to remote and removes the LCI mapping from the session manager.
 
 ### Receive a Notification that an X.25 Packet Socket Was Disconnected Remotely and Clean Up
 
@@ -444,7 +647,7 @@ The link layer (L2) is terminated by the kernel. This affects all connections on
    ```
    [PI][0x02]
    ```
-   The kernel sends this (via `x25_terminate_link()`) when the link is administratively terminated (on `NETDEV_DOWN` or `X25_IFACE_DISCONNECT`). The frame has an empty payload; only the 5-byte `[PI][0x02]` sequence is written to the TUN fd. On receipt, the gateway must clean up all sessions. The kernel has already killed all associated AF\_X25 sockets internally; no acknowledgement or `CLR_REQ` to the kernel is required.
+   The kernel sends this (via `x25_link_terminated()`) when the link is terminated (on `NETDEV_CHANGE` carrier-off, `NETDEV_DOWN`, or receipt of `X25_IFACE_DISCONNECT`). The frame has an empty payload; only the 5-byte `[PI][0x02]` sequence is written to the TUN fd. On receipt, the gateway must clean up all sessions. The kernel has already killed all associated AF\_X25 sockets internally; no acknowledgement or `CLR_REQ` to the kernel is required.
 
 2. Gateway reads the frame. The payload is empty, only the control byte `0x02` is present.
 
