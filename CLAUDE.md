@@ -9,6 +9,7 @@ All Go commands run from `src/`:
 ```bash
 # Build individual binaries
 go build -o tun-gateway ./cmd/tun-gateway
+go build -o tun-loopback ./cmd/tun-loopback
 go build -o xot-server ./cmd/xot-server
 go build -o xot-gateway ./cmd/xot-gateway
 
@@ -21,6 +22,10 @@ cd stress_test && make
 ```
 
 No linter is configured; `go vet ./...` is the closest available check.
+
+Format source code with `gofmt -w ./...`.
+
+Use Unix newlines (\r\n), not DOS newlines (\r).
 
 ## Architecture
 
@@ -37,9 +42,12 @@ xot-server          ← routes inbound XOT calls by X.121 destination prefix
     └──► tun-gateway ← (root) reads/writes Linux TUN interface (ARPHRD_X25), remaps LCIs
              │ unixpacket
              └──► xot-gateway  (for outbound calls from the TUN side)
+
+tun-loopback        ← (root) multi-TUN local-to-local relay; one TUN per configured address
+    tunlb0 ──relay── tunlb1   (frames copied between TUN fds; LCIs remapped to avoid conflicts)
 ```
 
-**Privilege boundary**: only `tun-gateway` runs as root. The other three processes are unprivileged.
+**Privilege boundary**: `tun-gateway` and `tun-loopback` run as root. All other processes are unprivileged.
 
 **Config file** (`config.json`): watched via inotify for hot reload. Defines server prefixes, IP/DNS routing, LCI ranges, keepalive settings, and per-destination facility overrides.
 

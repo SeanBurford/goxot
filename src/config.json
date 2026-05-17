@@ -7,27 +7,33 @@
   },
   "tun-gateway": {
     "lci_start": 1024,
-    "lci_end": 4096,
+    "lci_end": 3071,
     "stats-port": 8003
+  },
+  "tun-loopback": {
+    "lci_start": 3072,
+    "lci_end": 4095,
+    "stats-port": 8004,
+    "routes": ["127001", "127002"]
   },
   "servers": [
     {
       "prefix": "123/3",
-      "ip": "192.168.1.1",
+      "ip": "192.0.2.1",
       "port": 1998,
       "tcp-keepalive-interval": 30,
       "x25-keepalive-interval": 0
     },
     {
-      "prefix": "127/3",
-      "ip": "192.168.248.100",
+      "prefix": "124/3",
+      "ip": "192.0.2.2",
       "port": 1998,
       "tcp-keepalive-interval": 30,
       "x25-keepalive-interval": 0
     },
     {
       "prefix": "701/3",
-      "ip": "192.168.251.250",
+      "ip": "192.0.2.3",
       "port": 1998,
       "tcp-keepalive-interval": 30,
       "x25-keepalive-interval": 0

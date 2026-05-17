@@ -10,12 +10,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 go build ./cmd/...            # build all binaries
-go test ./...                 # run all tests
+go test ./...                 # run all tests (includes tun/ subpackage)
 go test -v -run TestFoo ./... # run a single test
 go vet ./...                  # static analysis
 ```
 
+## Package layout
+
+| Path | Package | Purpose |
+|---|---|---|
+| `.` | `xot` | X.25/XOT protocol, session management, config, stats |
+| `tun/` | `tun` | Linux ARPHRD_X25 TUN interface operations (shared by tun-gateway and tun-loopback) |
+| `cmd/tun-gateway/` | `main` | Privileged TUN↔XOT relay |
+| `cmd/tun-loopback/` | `main` | Privileged multi-TUN local-to-local relay |
+| `cmd/tun-listener/` | `main` | Diagnostic AF_X25 listener |
+| `cmd/xot-server/` | `main` | Inbound XOT TCP server |
+| `cmd/xot-gateway/` | `main` | Outbound XOT TCP dialer |
+
 ## Library packages
+
+### tun/ — Linux ARPHRD_X25 TUN operations
+
+Shared between `tun-gateway` and `tun-loopback`. Both commands import `github.com/SeanBurford/goxot/tun`.
+
+**Key exports**:
+- `Interface` — wraps a TUN fd; implements `io.Reader`, `io.Writer`, `io.Closer`, plus `Name()` and `Fd()`
+- `Setup(name string) (*Interface, error)` — opens `/dev/net/tun`, sets `ARPHRD_X25`, brings up
+- `BringUp(name string) error` — `IFF_UP | IFF_RUNNING` via `SIOCSIFFLAGS`
+- `AddRoute(iface, prefix string, digits int) error` / `DeleteRoute(...)` — `SIOCADDRT`/`SIOCDELRT`
+- `SetSubscription(iface string, lciStart, lciEnd int) error` — `SIOCX25SSUBSCRIP`; enables extended mode when `lciEnd > 255`
+- `ReadFrame(r io.Reader, ifname string, buf []byte) (hdr byte, payload []byte, err error)` — reads one PI-framed packet; skips non-X25 EtherType frames; payload aliases buf
+- `WriteFrame(w io.Writer, ifname string, hdr byte, data []byte) error` — allocates internally
+- `WriteFrameBuf(w io.Writer, ifname string, hdr byte, data, buf []byte) error` — zero-alloc hot path; `cap(buf) >= len(data)+5`
+- `HeaderData`, `HeaderConnect`, `HeaderDisconnect`, `HeaderParam` — PI control byte constants
+- `MaxPacketSize` — `xot.MaxX25PacketSize + 5` (read buffer size)
+
+**Tests** in `tun/tun_test.go` use a `perFrameReader` that returns one complete frame per `Read` call, simulating TUN semantics.
+
+---
 
 ### x25.go — X.25 packet encoding
 
@@ -73,6 +105,8 @@ XOT header: 2-byte big-endian version (0) + 2-byte big-endian length + X.25 payl
 ---
 
 ### config.go — configuration management
+
+**`TunLoopbackConfig`**: embeds `TunConfig` (`lci_start`/`lci_end`) and `ServiceConfig` (`stats-port`); adds `Routes []string` — one X.121 address per TUN created by `tun-loopback`.
 
 **`XotServerConfig`**: `Prefix string` (e.g., `"123/3"`), `IP string`, `Port int`, `DNSPattern string`, `DNSName string`, `TCPKeepaliveInterval *int` (nil→30s, 0→disabled), `X25KeepaliveInterval int`.
 

@@ -9,7 +9,8 @@ The gateway is split into distinct processes to improve security and modularity:
 1.  **`tun-gateway`**: The only privileged process. It manages the physical Linux TUN device and handles LCI remapping. It listens on a Unix Domain Socket (`/tmp/xot_tun.sock`) for connections from `xot-server`.
 2.  **`xot-server`**: An unprivileged process that handles incoming XOT (TCP) connections. It examines the `Call Request` destination and routes the call to either `xot-gateway` (for configured routes) or `tun-gateway` (for local TUN delivery).
 3.  **`xot-gateway`**: An unprivileged process that handles outgoing XOT (TCP) connections. It listens on a Unix Domain Socket (`/tmp/xot_gwy.sock`) and connects to remote XOT servers based on the `config.json` routing table.
-4.  **`tun-listener`**: An unprivileged diagnostic tool that binds to a specific X.25 address on a Linux interface (typically a TUN interface managed by **tun-gateway**). It accepts incoming X.25 calls and provides real-time diagnostic information to the caller.
+4.  **`tun-loopback`**: A privileged process that enables local-to-local X.25 connections by creating one `ARPHRD_X25` TUN interface per configured route address and relaying frames between them. Solves the kernel limitation that prevents an AF_X25 `connect()` from reaching a local `listen()` socket on the same device.
+5.  **`tun-listener`**: An unprivileged diagnostic tool that binds to a specific X.25 address on a Linux interface (typically a TUN interface managed by **tun-gateway** or **tun-loopback**). It accepts incoming X.25 calls and provides real-time diagnostic information to the caller.
 
 Here is a typical setup, combining Linux x.25 routing and TUN devices with XOT:
 ![Stress Test Setup](stress_test/stress_test1.png)
@@ -17,8 +18,9 @@ Here is a typical setup, combining Linux x.25 routing and TUN devices with XOT:
 ## Features
 
 - **RFC 1613 Implementation**: Handles XOT framing (4-byte header: 2-byte version + 2-byte length over TCP).
-- **Privilege Separation**: Only the TUN-facing component requires root privileges.
-- **LCI Remapping**: `tun-gateway` manages unique LCIs for the TUN interface.
+- **Privilege Separation**: Only the TUN-facing components require root privileges.
+- **LCI Remapping**: `tun-gateway` and `tun-loopback` manage unique LCIs per TUN interface.
+- **Local-to-Local X.25**: `tun-loopback` enables AF_X25 sockets to call each other on the same machine without kernel changes.
 - **X.121 Routing**: Flexible routing based on X.121 address prefixes.
 - **Trace Logging**: Standardized trace format: `{source}>{destination} {packettype} {hexdump}`.
 - **DNS Based Routing**: Look up XOT server addresses from their X.121 address in DNS.
@@ -30,7 +32,7 @@ Here is a typical setup, combining Linux x.25 routing and TUN devices with XOT:
 
 - Go 1.21 or later.
 - Linux environment (for TUN interface support).
-- Root/Sudo privileges and the Linux x25 module (only for `tun-gateway`).
+- Root/Sudo privileges and the Linux x25 module (only for `tun-gateway` and `tun-loopback`).
 
 ## Installation
 
@@ -39,6 +41,7 @@ Here is a typical setup, combining Linux x.25 routing and TUN devices with XOT:
 3. Build the binaries:
    ```bash
    go build -o tun-gateway ./cmd/tun-gateway
+   go build -o tun-loopback ./cmd/tun-loopback
    go build -o xot-server ./cmd/xot-server
    go build -o xot-gateway ./cmd/xot-gateway
    go build -o tun-listener ./cmd/tun-listener
@@ -61,6 +64,12 @@ Example `config.json`:
     "lci_start": 1,
     "lci_end": 255,
     "stats-port": 8003
+  },
+  "tun-loopback": {
+    "lci_start": 1024,
+    "lci_end": 4095,
+    "stats-port": 8004,
+    "routes": ["127100", "127200"]
   },
   "servers": [
     {
@@ -105,7 +114,12 @@ Example `config.json`:
    ./xot-server -listen 0.0.0.0:1998 -config config.json -trace
    ```
 
-4. Start **`tun-listener`** to give yourself something to talk to (unprivileged):
+4. Optionally start **`tun-loopback`** for local-to-local X.25 (privileged):
+   ```bash
+   sudo ./tun-loopback -config config.json
+   ```
+
+5. Start **`tun-listener`** to give yourself something to talk to (unprivileged):
    ```bash
    ./tun-listener -address 127001
    ```

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Purpose
 
-`tun-gateway` is the only privileged component in the goxot stack (requires root). It owns the Linux TUN interface (`ARPHRD_X25`) and bridges kernel X.25 sockets to the rest of the stack. It remaps LCIs between the kernel's namespace and the gateway's namespace, and intercepts outbound calls to route them through `xot-gateway`.
+`tun-gateway` is one of two privileged components in the goxot stack (requires root). It owns the Linux TUN interface (`ARPHRD_X25`) and bridges kernel X.25 sockets to the rest of the stack. It remaps LCIs between the kernel's namespace and the gateway's namespace, and intercepts outbound calls to route them through `xot-gateway`.
+
+Low-level TUN operations (`Setup`, `BringUp`, `AddRoute`, `DeleteRoute`, `SetSubscription`, `ReadFrame`, `WriteFrame`) are in `github.com/SeanBurford/goxot/tun` (shared with `tun-loopback`). The constants `tun.HeaderData/Connect/Disconnect` and `tun.MaxPacketSize` replace the former local constants.
 
 ## Flags
 

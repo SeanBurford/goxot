@@ -42,12 +42,19 @@ type TunGatewayConfig struct {
 	ServiceConfig
 }
 
+type TunLoopbackConfig struct {
+	TunConfig
+	ServiceConfig
+	Routes []string `json:"routes"` // X.121 addresses; each gets its own TUN interface
+}
+
 type DestinationConfig struct {
 	Facilities map[string]string `json:"facilities"`
 }
 
 type Config struct {
 	TunGateway   TunGatewayConfig             `json:"tun-gateway"`
+	TunLoopback  TunLoopbackConfig            `json:"tun-loopback"`
 	XotGateway   ServiceConfig                `json:"xot-gateway"`
 	XotServer    ServiceConfig                `json:"xot-server"`
 	Servers      []XotServerConfig            `json:"servers"`
@@ -116,6 +123,28 @@ func (cm *ConfigManager) Reload() (bool, error) {
 		cfg.TunGateway.LciEnd = LciEndDefault
 	}
 
+	// Set defaults and clamp for TunLoopback.
+	if cfg.TunLoopback.LciStart == 0 {
+		cfg.TunLoopback.LciStart = LciStartDefault
+	}
+	if cfg.TunLoopback.LciEnd == 0 {
+		cfg.TunLoopback.LciEnd = LciEndDefault
+	}
+	if cfg.TunLoopback.LciStart < LCIMin {
+		log.Printf("Warning: tun-loopback lci_start %d < minimum %d, clamping", cfg.TunLoopback.LciStart, LCIMin)
+		cfg.TunLoopback.LciStart = LCIMin
+	}
+	if cfg.TunLoopback.LciEnd > LCIMax {
+		log.Printf("Warning: tun-loopback lci_end %d > maximum %d, clamping", cfg.TunLoopback.LciEnd, LCIMax)
+		cfg.TunLoopback.LciEnd = LCIMax
+	}
+	if cfg.TunLoopback.LciStart >= cfg.TunLoopback.LciEnd {
+		log.Printf("Warning: tun-loopback lci_start %d >= lci_end %d, resetting to defaults %d-%d",
+			cfg.TunLoopback.LciStart, cfg.TunLoopback.LciEnd, LciStartDefault, LciEndDefault)
+		cfg.TunLoopback.LciStart = LciStartDefault
+		cfg.TunLoopback.LciEnd = LciEndDefault
+	}
+
 	// Set defaults and validate servers
 	validServers := make([]XotServerConfig, 0, len(cfg.Servers))
 	for i := range cfg.Servers {
@@ -174,6 +203,15 @@ func (cm *ConfigManager) GetTunGatewayConfig() TunGatewayConfig {
 		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
 	}
 	return cm.config.TunGateway
+}
+
+func (cm *ConfigManager) GetTunLoopbackConfig() TunLoopbackConfig {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if cm.config == nil {
+		return TunLoopbackConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
+	}
+	return cm.config.TunLoopback
 }
 
 func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
