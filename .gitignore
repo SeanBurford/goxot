@@ -11,6 +11,12 @@ stress_test
 !stress_test/
 tun_close
 !tun_close/
+xot-server
+!xot-server/
+xot-gateway
+!xot-gateway/
+tun-gateway
+!tun-gateway/
 
 
 # Test binary, built with `go test -c`

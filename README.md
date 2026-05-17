@@ -4,7 +4,7 @@ This is a Linux command line application suite written in Go that implements RFC
 
 ## Architecture
 
-The gateway is split into three distinct processes to improve security and modularity:
+The gateway is split into distinct processes to improve security and modularity:
 
 1.  **`tun-gateway`**: The only privileged process. It manages the physical Linux TUN device and handles LCI remapping. It listens on a Unix Domain Socket (`/tmp/xot_tun.sock`) for connections from `xot-server`.
 2.  **`xot-server`**: An unprivileged process that handles incoming XOT (TCP) connections. It examines the `Call Request` destination and routes the call to either `xot-gateway` (for configured routes) or `tun-gateway` (for local TUN delivery).
