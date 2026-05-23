@@ -211,17 +211,22 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		var destName string
 		var destIf string
 
-		srv := cm.GetServer(called)
-		if srv != nil {
-			// Route to xot-gateway
+		srv, local := cm.GetServer(called, true)
+		if local {
+			// Route to tun-gateway (destination is local or unknown)
+			destConn, err = net.Dial("unixpacket", "/tmp/xot_tun.sock")
+			destName = "TUN"
+			destIf = "tun"
+		} else if srv != nil {
+			// Route to xot-gateway (destination is a known remote server)
 			destConn, err = net.Dial("unixpacket", "/tmp/xot_gwy.sock")
 			destName = "GWY"
 			destIf = "xot_fwd"
 		} else {
-			// Route to tun-gateway
-			destConn, err = net.Dial("unixpacket", "/tmp/xot_tun.sock")
-			destName = "TUN"
-			destIf = "tun"
+			log.Printf("%s: No route for %s", source, called)
+			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
+			xot.SendXot("xot", conn, clr.Serialize())
+			return
 		}
 
 		if err == nil {
@@ -236,7 +241,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			return
 		}
 
-		if srv != nil && srv.TCPKeepaliveInterval != nil && *srv.TCPKeepaliveInterval > 0 {
+		if !local && srv != nil && srv.TCPKeepaliveInterval != nil && *srv.TCPKeepaliveInterval > 0 {
 			if kaErr := xot.SetTCPKeepalive(conn, time.Duration(*srv.TCPKeepaliveInterval)*time.Second); kaErr != nil {
 				log.Printf("%s: Failed to set TCP keepalive: %v", source, kaErr)
 			}

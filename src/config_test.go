@@ -41,7 +41,7 @@ func TestConfigManager(t *testing.T) {
 		t.Errorf("Expected XOT Server stats-port 12345, got %d", xsr.StatsPort)
 	}
 
-	srv := cm.GetServer("12345")
+	srv, _ := cm.GetServer("12345", false)
 	if srv == nil {
 		t.Errorf("GetServer failed to find matching server")
 	} else if srv.IP != "1.1.1.1" {
@@ -63,7 +63,7 @@ func TestConfigManager(t *testing.T) {
 	
 	cm.Reload()
 
-	srv = cm.GetServer("45678")
+	srv, _ = cm.GetServer("45678", false)
 	if srv == nil {
 		t.Errorf("Failed to find DNS server 456")
 	} else {
@@ -72,7 +72,7 @@ func TestConfigManager(t *testing.T) {
 		}
 	}
 
-	srv = cm.GetServer("78901")
+	srv, _ = cm.GetServer("78901", false)
 	if srv == nil {
 		t.Errorf("Failed to find DNS server 789")
 	} else {
@@ -183,7 +183,7 @@ func TestConfigDNSDefaultPattern(t *testing.T) {
 		t.Fatalf("NewConfigManager failed: %v", err)
 	}
 
-	srv := cm.GetServer("12345")
+	srv, _ := cm.GetServer("12345", false)
 	if srv == nil {
 		t.Fatal("Expected server, got nil")
 	}
@@ -215,12 +215,59 @@ func TestGetServerLongestPrefix(t *testing.T) {
 		{"12345", "1.0.0.4"},
 	}
 	for _, c := range cases {
-		srv := cm.GetServer(c.addr)
+		srv, _ := cm.GetServer(c.addr, false)
 		if srv == nil {
 			t.Errorf("GetServer(%q) returned nil", c.addr)
 		} else if srv.IP != c.ip {
 			t.Errorf("GetServer(%q): got %s, want %s", c.addr, srv.IP, c.ip)
 		}
+	}
+}
+
+func TestGetServerLocality(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"servers": [
+			{"prefix": "100/3", "ip": "127.0.0.1"},
+			{"prefix": "200/3", "ip": "192.0.2.1"}
+		]
+	}`)
+
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+
+	srv, local := cm.GetServer("10000", false)
+	if srv == nil {
+		t.Fatal("expected server for 100xx")
+	}
+	if !local {
+		t.Error("127.0.0.1 should be detected as local")
+	}
+
+	srv, local = cm.GetServer("20000", false)
+	if srv == nil {
+		t.Fatal("expected server for 200xx")
+	}
+	if local {
+		t.Error("192.0.2.1 (TEST-NET) should not be detected as local")
+	}
+
+	// No server: local flag should reflect defaultLocal
+	srv, local = cm.GetServer("99999", true)
+	if srv != nil {
+		t.Error("expected nil server for unmatched address")
+	}
+	if !local {
+		t.Error("defaultLocal=true should be returned when no server matches")
+	}
+
+	srv, local = cm.GetServer("99999", false)
+	if srv != nil {
+		t.Error("expected nil server for unmatched address")
+	}
+	if local {
+		t.Error("defaultLocal=false should be returned when no server matches")
 	}
 }
 

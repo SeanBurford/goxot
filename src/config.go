@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -268,15 +269,48 @@ func (cm *ConfigManager) GetDestination(addr string) *DestinationConfig {
 	return nil
 }
 
-func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
+// isLocalIP returns true if ip matches any address on a local network interface.
+func isLocalIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ifIP net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ifIP = v.IP
+			case *net.IPAddr:
+				ifIP = v.IP
+			}
+			if ifIP != nil && ifIP.Equal(parsed) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetServer returns the longest-prefix-matching server for x121Addr, plus a
+// local flag.  If the server's IP (or any IP resolved from its DNS name) is
+// assigned to a local interface the flag is true; if resolution fails or no
+// server is found the flag defaults to defaultLocal.
+func (cm *ConfigManager) GetServer(x121Addr string, defaultLocal bool) (*XotServerConfig, bool) {
 	// Reload config if it changed on disk
 	if _, err := cm.Reload(); err != nil {
 		log.Printf("Warning: failed to reload config: %v", err)
 	}
 
 	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
 	var best *XotServerConfig
 	bestLen := -1
 	for _, srv := range cm.config.Servers {
@@ -301,7 +335,22 @@ func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
 			bestLen = plen
 		}
 	}
-	return best
+	cm.mu.RUnlock()
+
+	if best == nil {
+		return nil, defaultLocal
+	}
+
+	ips, err := ResolveXotDestination(x121Addr, best)
+	if err != nil {
+		return best, defaultLocal
+	}
+	for _, ip := range ips {
+		if isLocalIP(ip) {
+			return best, true
+		}
+	}
+	return best, false
 }
 
 func validateDestinations(destinations map[string]DestinationConfig) map[string]DestinationConfig {

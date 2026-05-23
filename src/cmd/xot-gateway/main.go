@@ -189,10 +189,15 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		}
 		log.Printf("%s: CALL_REQ from %s to %s (fac: %s)", source, calling, called, xot.FormatFacilities(fac))
 
-		srv := cm.GetServer(called)
+		srv, local := cm.GetServer(called, false)
 		if srv == nil {
-			log.Printf("No route for %s", called)
-			// Send Clear Request back to source - Use CauseNumberBusy (0x01) as per best practices
+			log.Printf("%s: No route for %s", source, called)
+			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
+			xot.SendXot("unix", conn, clr.Serialize())
+			return
+		}
+		if local {
+			log.Printf("%s: Rejecting local destination %s", source, called)
 			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return

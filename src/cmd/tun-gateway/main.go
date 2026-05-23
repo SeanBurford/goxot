@@ -368,14 +368,17 @@ func (tg *TunGateway) handleTunRead() {
 			pkt, err := xot.ParseX25(payload)
 			if err == nil {
 				called, calling, fac, _, err := pkt.ParseCallRequest()
-				if err == nil && tg.cm.GetServer(called) != nil {
-					log.Printf("TUN: Intercepting CALL_REQ from %s to %s (fac: %s)", calling, called, xot.FormatFacilities(fac))
-					// RACE-A: payload aliases the TUN read buffer; copy before spawning.
-					pktData := make([]byte, len(payload))
-					copy(pktData, payload)
-					pktSafe, _ := xot.ParseX25(pktData)
-					go tg.forwardToGateway(pktSafe)
-					continue
+				if err == nil {
+					srv, local := tg.cm.GetServer(called, true)
+					if !local && srv != nil {
+						log.Printf("TUN: Intercepting CALL_REQ from %s to %s (fac: %s)", calling, called, xot.FormatFacilities(fac))
+						// RACE-A: payload aliases the TUN read buffer; copy before spawning.
+						pktData := make([]byte, len(payload))
+						copy(pktData, payload)
+						pktSafe, _ := xot.ParseX25(pktData)
+						go tg.forwardToGateway(pktSafe)
+						continue
+					}
 				}
 			}
 		}
@@ -558,7 +561,11 @@ func (tg *TunGateway) SyncRoutes() {
 			prefix := parts[0]
 			digits := 0
 			fmt.Sscanf(parts[1], "%d", &digits)
-			newRoutes[prefix] = digits
+			// Only install routes for remote (non-local) destinations.
+			_, local := tg.cm.GetServer(prefix, true)
+			if !local {
+				newRoutes[prefix] = digits
+			}
 		}
 	}
 
