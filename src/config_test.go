@@ -192,6 +192,38 @@ func TestConfigDNSDefaultPattern(t *testing.T) {
 	}
 }
 
+func TestGetServerLongestPrefix(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"servers": [
+			{"prefix": "12/2",   "ip": "1.0.0.1"},
+			{"prefix": "1234/4", "ip": "1.0.0.4"},
+			{"prefix": "123/3",  "ip": "1.0.0.3"}
+		]
+	}`)
+
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+
+	cases := []struct {
+		addr string
+		ip   string
+	}{
+		{"12000", "1.0.0.1"},
+		{"12300", "1.0.0.3"},
+		{"12345", "1.0.0.4"},
+	}
+	for _, c := range cases {
+		srv := cm.GetServer(c.addr)
+		if srv == nil {
+			t.Errorf("GetServer(%q) returned nil", c.addr)
+		} else if srv.IP != c.ip {
+			t.Errorf("GetServer(%q): got %s, want %s", c.addr, srv.IP, c.ip)
+		}
+	}
+}
+
 func TestConfigInvalidJSON(t *testing.T) {
 	path := writeConfigFile(t, `{invalid json`)
 

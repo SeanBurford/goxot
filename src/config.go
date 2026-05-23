@@ -277,6 +277,8 @@ func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
+	var best *XotServerConfig
+	bestLen := -1
 	for _, srv := range cm.config.Servers {
 		parts := strings.Split(srv.Prefix, "/")
 		if len(parts) != 2 {
@@ -293,12 +295,13 @@ func (cm *ConfigManager) GetServer(x121Addr string) *XotServerConfig {
 			log.Printf("Warning: Prefix %s/%s ignored: len %d != %d", parts[0], parts[1], len(parts[0]), plen)
 			continue
 		}
-		if strings.HasPrefix(x121Addr, prefix) {
+		if strings.HasPrefix(x121Addr, prefix) && plen > bestLen {
 			srvCopy := srv
-			return &srvCopy
+			best = &srvCopy
+			bestLen = plen
 		}
 	}
-	return nil
+	return best
 }
 
 func validateDestinations(destinations map[string]DestinationConfig) map[string]DestinationConfig {
