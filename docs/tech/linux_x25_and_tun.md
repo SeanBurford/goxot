@@ -161,6 +161,8 @@ listen(sockfd, backlog);
 
 Places a bound socket into the listening state (`TCP_LISTEN`).  Must be called on a socket that is in `SS_UNCONNECTED` state; returns `EINVAL` otherwise.  `backlog` sets `sk->sk_max_ack_backlog`, which caps the number of pending unaccepted calls queued by the kernel.
 
+The wildcard address (`null_x25_address`) "               " (15 spaces) matches any incoming call.
+
 ---
 
 ### `accept()`
