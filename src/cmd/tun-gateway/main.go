@@ -43,8 +43,8 @@ type TunGateway struct {
 	shuttingDown int32 // atomic: 1 = shutting down
 }
 
-func (tg *TunGateway) getTunLCI(conn net.Conn, incomingLCI uint16) uint16 {
-	s, err := tg.sm.AllocateAndAddTunSession(conn, incomingLCI)
+func (tg *TunGateway) getTunLCI(conn net.Conn, incomingGFI byte, incomingLCI uint16) uint16 {
+	s, err := tg.sm.AllocateAndAddTunSession(conn, incomingGFI, incomingLCI)
 	if err != nil {
 		log.Printf("TUN: %v", err)
 		return 0
@@ -61,7 +61,7 @@ func (tg *TunGateway) cleanupConn(conn net.Conn) {
 			if *trace {
 				log.Printf("TUN: Cleaning up LCI %d - sending CLEAR_REQ to kernel", s.LciA)
 			}
-			clr := xot.CreateClearRequest(s.LciA, xot.CauseOutofOrder, 0)
+			clr := xot.CreateClearRequest(s.GFI, s.LciA, xot.CauseOutofOrder, 0)
 			tun.WriteFrame(tg.ifce, *tunName, tun.HeaderData, clr.Serialize())
 		}
 		tg.sm.RemoveSession(s)
@@ -73,7 +73,7 @@ func (tg *TunGateway) closeAllSessions() {
 	sessions := tg.sm.RemoveAllSessions()
 	for _, s := range sessions {
 		if s.ConnB != nil {
-			clr := xot.CreateClearRequest(s.LciB, xot.CauseNetworkCongestion, 0)
+			clr := xot.CreateClearRequest(s.GFI, s.LciB, xot.CauseNetworkCongestion, 0)
 			xot.SendXot("xot", s.ConnB, clr.Serialize())
 		}
 	}
@@ -198,8 +198,9 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v", source, err)
 				xot.CausesGenerated.Add("packet_too_long", 1)
+				gfiErr := xot.GetGFI(data)
 				lciErr := xot.GetLCI(data)
-				clr := xot.CreateClearRequest(lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				clr := xot.CreateClearRequest(gfiErr, lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 				xot.SendXot("unix", conn, clr.Serialize())
 			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)
@@ -211,6 +212,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 		pktTypeName := xot.GetPacketTypeName(pktType)
 		xot.PacketsHandled.Add(pktTypeName, 1)
 
+		incomingGFI := xot.GetGFI(data)
 		incomingLCI := xot.GetLCI(data)
 
 		// ABA: if a new CALL_REQ arrives on an LCI we think is still active, force-remove
@@ -248,7 +250,7 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 
 		if atomic.LoadInt32(&tg.linkState) != LinkStateOperational {
 			log.Printf("%s: Dropping packet for LCI %d - link not operational", source, incomingLCI)
-			clr := xot.CreateClearRequest(incomingLCI, xot.CauseNetworkCongestion, 0)
+			clr := xot.CreateClearRequest(incomingGFI, incomingLCI, xot.CauseNetworkCongestion, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -258,10 +260,10 @@ func (tg *TunGateway) handleServerConn(conn net.Conn) {
 			return
 		}
 
-		tunLCI := tg.getTunLCI(conn, incomingLCI)
+		tunLCI := tg.getTunLCI(conn, incomingGFI, incomingLCI)
 		if tunLCI == 0 {
 			log.Printf("%s: Failed to allocate tunLCI for incoming LCI %d", source, incomingLCI)
-			clr := xot.CreateClearRequest(incomingLCI, xot.CauseNetworkCongestion, 0)
+			clr := xot.CreateClearRequest(incomingGFI, incomingLCI, xot.CauseNetworkCongestion, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -341,7 +343,7 @@ func (tg *TunGateway) handleTunRead() {
 				log.Printf("%s> Sending RESTART_CONF", tunSource)
 			}
 			buf := make([]byte, 3)
-			buf[0] = xot.GFIStandard << 4
+			buf[0] = payload[0] & 0xF0
 			buf[1] = 0
 			buf[2] = xot.PktTypeRestartConfirm
 			tun.WriteFrame(tg.ifce, *tunName, tun.HeaderData, buf)
@@ -354,6 +356,7 @@ func (tg *TunGateway) handleTunRead() {
 			continue
 		}
 
+		pGFI := xot.GetGFI(payload)
 		pLCI := xot.GetLCI(payload)
 
 		if pktType == xot.PktTypeCallRequest {
@@ -428,7 +431,7 @@ func (tg *TunGateway) handleTunRead() {
 				if *trace {
 					log.Printf("%s< NO_SESSION - Sending CLEAR to prevent kernel hang on LCI %d", tunSource, pLCI)
 				}
-				clr := xot.CreateClearRequest(pLCI, xot.CauseNetworkCongestion, 0)
+				clr := xot.CreateClearRequest(pGFI, pLCI, xot.CauseNetworkCongestion, 0)
 				tun.WriteFrame(tg.ifce, *tunName, tun.HeaderData, clr.Serialize())
 			}
 		}
@@ -448,18 +451,22 @@ func (tg *TunGateway) forwardToGateway(pkt *xot.X25Packet) {
 	conn, err := net.Dial("unixpacket", "/tmp/xot_gwy.sock")
 	if err != nil {
 		log.Printf("Failed to connect to xot-gateway: %v", err)
-		clr := xot.CreateClearRequest(pkt.LCI, xot.CauseNetworkCongestion, 0)
+		clr := xot.CreateClearRequest(pkt.GFI, pkt.LCI, xot.CauseNetworkCongestion, 0)
 		tun.WriteFrame(tg.ifce, *tunName, tun.HeaderData, clr.Serialize())
 		return
 	}
 
 	s := &xot.Session{
+		GFI:   pkt.GFI,
 		LciA:  pkt.LCI,
 		LciB:  pkt.LCI,
 		ConnB: conn,
 		State: xot.StateP2,
 	}
-	tg.sm.AddSession(s)
+	if err := tg.sm.AddSession(s); err != nil {
+		log.Printf("Failed to send CALL_REQ to gateway: %v", err)
+		conn.Close()
+	}
 
 	go func() {
 		xot.InterfaceSessionsOpened.Add("xot", 1)
@@ -494,8 +501,9 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 			if errors.Is(err, xot.ErrPacketTooLong) {
 				log.Printf("%s: %v from gateway", source, err)
 				xot.CausesGenerated.Add("packet_too_long", 1)
+				gfiErr := xot.GetGFI(data)
 				lciErr := xot.GetLCI(data)
-				clr := xot.CreateClearRequest(lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				clr := xot.CreateClearRequest(gfiErr, lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 				xot.SendXot("xot", conn, clr.Serialize())
 			} else if err != io.EOF {
 				log.Printf("%s: Error reading XOT: %v", source, err)

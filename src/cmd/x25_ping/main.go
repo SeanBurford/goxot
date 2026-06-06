@@ -54,7 +54,7 @@ func parseCUD(s string) ([]byte, error) {
 
 // negotiatedGFI is set from the GFI field of the CALL_CONNECTED packet.
 // GFI=1 → mod-8 (3-byte data header); GFI=2 → mod-128 (4-byte data header).
-var negotiatedGFI byte = xot.GFIStandard
+var negotiatedGFI byte = xot.GFIMod8
 
 // callFacilities negotiates window=1, packet_size=128 (2^7).
 var callFacilities = []byte{
@@ -63,9 +63,8 @@ var callFacilities = []byte{
 }
 
 // gfiByte returns the first byte of an X.25 header: GFI in upper nibble, LCI high in lower.
-// GFIStandard is the GFI value (1), not a pre-shifted byte.
 func gfiByte(lci uint16) byte {
-	return (xot.GFIStandard << 4) | byte((lci>>8)&0x0F)
+	return (negotiatedGFI << 4) | byte((lci>>8)&0x0F)
 }
 
 func buildCallRequest(lci uint16, called, calling string) []byte {
@@ -104,7 +103,7 @@ func buildCallRequest(lci uint16, called, calling string) []byte {
 	payload = append(payload, cudBytes...)
 
 	pkt := &xot.X25Packet{
-		GFI:     xot.GFIStandard,
+		GFI:     xot.GFIMod128,
 		LCI:     lci,
 		Type:    xot.PktTypeCallRequest,
 		Payload: payload,
@@ -112,36 +111,8 @@ func buildCallRequest(lci uint16, called, calling string) []byte {
 	return pkt.Serialize()
 }
 
-// createData builds an X.25 DATA packet with P(S) and P(R)=0.
-// If mbit is true the M (More Data) bit is set.
-// The packet format (3-byte mod-8 or 4-byte mod-128) follows negotiatedGFI.
 func createData(lci uint16, pS byte, mbit bool, data []byte) []byte {
-	hdr := (negotiatedGFI << 4) | byte((lci>>8)&0x0F)
-	if negotiatedGFI == 2 {
-		// mod-128: Byte 2: P(S)[7:1] | 0; Byte 3: P(R)[7:1] | M
-		byte3 := byte(0) // P(R)=0
-		if mbit {
-			byte3 |= 0x01 // M in bit 0
-		}
-		pkt := make([]byte, 4+len(data))
-		pkt[0] = hdr
-		pkt[1] = byte(lci & 0xFF)
-		pkt[2] = (pS & 0x7F) << 1
-		pkt[3] = byte3
-		copy(pkt[4:], data)
-		return pkt
-	}
-	// mod-8: Byte 2: P(R)(3b) | M(1b) | P(S)(3b) | 0
-	byte2 := (pS & 0x07) << 1
-	if mbit {
-		byte2 |= 0x10
-	}
-	pkt := make([]byte, 3+len(data))
-	pkt[0] = hdr
-	pkt[1] = byte(lci & 0xFF)
-	pkt[2] = byte2
-	copy(pkt[3:], data)
-	return pkt
+	return xot.CreateData(negotiatedGFI, lci, pS, 0, mbit, data)
 }
 
 func createResetRequest(lci uint16) []byte {
@@ -155,7 +126,7 @@ func createResetRequest(lci uint16) []byte {
 
 func createRestartRequest() []byte {
 	return []byte{
-		xot.GFIStandard << 4, // GFI=1, LCI=0
+		xot.GFIMod8 << 4, // GFI=1, LCI=0
 		0x00,
 		xot.PktTypeRestartRequest,
 		xot.CauseDTEOriginated, 0x00,
@@ -188,9 +159,9 @@ func parseCauseDiag(payload []byte) (cause, diag byte) {
 }
 
 // clearCall sends CLEAR_REQUEST and waits briefly for CLEAR_CONFIRM.
-func clearCall(conn net.Conn, lci uint16) {
-	log.Printf("CLEAR_REQ LCI=%d", lci)
-	pkt := xot.CreateClearRequest(lci, xot.CauseDTEOriginated, 0x00).Serialize()
+func clearCall(conn net.Conn, gfi byte, lci uint16) {
+	log.Printf("CLEAR_REQ GFI=%d LCI=%d", gfi, lci)
+	pkt := xot.CreateClearRequest(gfi, lci, xot.CauseDTEOriginated, 0x00).Serialize()
 	if err := xot.SendXot("xot", conn, pkt); err != nil {
 		log.Printf("CLEAR_REQ send failed: %v", err)
 		return
@@ -254,7 +225,7 @@ func run(conn net.Conn) {
 	callEstablished := false
 	defer func() {
 		if callEstablished {
-			clearCall(conn, lci)
+			clearCall(conn, negotiatedGFI, lci)
 		}
 	}()
 
@@ -323,7 +294,7 @@ func run(conn net.Conn) {
 				}
 				seq = (seq + 1) & seqMask
 			case "irq":
-				probeBytes = xot.CreateInterrupt(lci, 0x01)
+				probeBytes = xot.CreateInterrupt(negotiatedGFI, lci, 0x01)
 				probeLabel = "INTERRUPT"
 			case "reset":
 				probeBytes = createResetRequest(lci)

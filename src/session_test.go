@@ -12,15 +12,19 @@ func TestSessionManager(t *testing.T) {
 	if err != nil || lci != 1 {
 		t.Errorf("Expected LCI 1, got %d (err: %v)", lci, err)
 	}
-	s1 := &Session{LciA: lci, LciB: 100, State: StateP1}
-	sm.AddSession(s1)
+	s1 := &Session{GFI: GFIMod8, LciA: lci, LciB: 100, State: StateP1}
+	if err := sm.AddSession(s1); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	lci2, _ := sm.AllocateTunLCI()
 	if lci2 != 2 {
 		t.Errorf("Expected LCI 2, got %d", lci2)
 	}
-	s2 := &Session{LciA: lci2, LciB: 101, State: StateP1}
-	sm.AddSession(s2)
+	s2 := &Session{GFI: GFIMod128, LciA: lci2, LciB: 101, State: StateP1}
+	if err := sm.AddSession(s2); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	if sm.GetByALCI(lci) != s1 {
 		t.Errorf("Failed to get session by A LCI")
@@ -34,15 +38,18 @@ func TestSessionManager(t *testing.T) {
 }
 
 func TestAddRemoveSession(t *testing.T) {
-	sm := NewSessionManager(1, 4095)
+	sm := NewSessionManager(LCIMin, LCIMax)
 	conn := &net.TCPConn{}
 	s := &Session{
+		GFI:   GFIMod8,
 		LciA:  10,
 		LciB:  20,
 		ConnB: conn,
 	}
 
-	sm.AddSession(s)
+	if err := sm.AddSession(s); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 	if sm.GetByALCI(10) != s {
 		t.Errorf("Failed to get session by side A LCI")
 	}
@@ -58,10 +65,14 @@ func TestAddRemoveSession(t *testing.T) {
 
 func TestRemoveAllSessions(t *testing.T) {
 	sm := NewSessionManager(1, 10)
-	s1 := &Session{LciA: 1, LciB: 101}
-	s2 := &Session{LciA: 2, LciB: 102}
-	sm.AddSession(s1)
-	sm.AddSession(s2)
+	s1 := &Session{GFI: GFIMod128, LciA: 1, LciB: 101}
+	s2 := &Session{GFI: GFIMod8, LciA: 2, LciB: 102}
+	if err := sm.AddSession(s1); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
+	if err := sm.AddSession(s2); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	sessions := sm.RemoveAllSessions()
 	if len(sessions) != 2 {
@@ -104,13 +115,17 @@ func TestGetSessionsForConn(t *testing.T) {
 
 	// Use conn1b as ConnB for 3 sessions with different LciB
 	for _, lci := range []uint16{1, 2, 3} {
-		s := &Session{LciA: lci, LciB: lci + 100, ConnB: conn1b}
-		sm.AddSession(s)
+		s := &Session{GFI: GFIMod8, LciA: lci, LciB: lci + 100, ConnB: conn1b}
+		if err := sm.AddSession(s); err != nil {
+			t.Errorf("AddSession: %v", err)
+		}
 	}
 
 	// Use conn2b as ConnB for 1 session
-	s4 := &Session{LciA: 10, LciB: 10, ConnB: conn2b}
-	sm.AddSession(s4)
+	s4 := &Session{GFI: GFIMod128, LciA: 10, LciB: 10, ConnB: conn2b}
+	if err := sm.AddSession(s4); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	got1 := sm.GetSessionsForConn(conn1b)
 	if len(got1) != 3 {
@@ -136,8 +151,10 @@ func TestGetAllSessions(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		a, b := net.Pipe()
 		conns = append(conns, a, b)
-		s := &Session{LciA: uint16(i + 1), LciB: uint16(i + 100), ConnB: b}
-		sm.AddSession(s)
+		s := &Session{GFI: GFIMod8, LciA: uint16(i + 1), LciB: uint16(i + 100), ConnB: b}
+		if err := sm.AddSession(s); err != nil {
+			t.Errorf("AddSession: %v", err)
+		}
 	}
 	defer func() {
 		for _, c := range conns {
@@ -170,8 +187,10 @@ func TestAllocateTunLCIExhausted(t *testing.T) {
 		if lci != i {
 			t.Errorf("Expected LCI %d, got %d", i, lci)
 		}
-		s := &Session{LciA: lci, LciB: lci + 100}
-		sm.AddSession(s)
+		s := &Session{GFI: GFIMod8, LciA: lci, LciB: lci + 100}
+		if err := sm.AddSession(s); err != nil {
+			t.Errorf("AddSession: %v", err)
+		}
 	}
 
 	// 4th allocation should fail
@@ -188,12 +207,16 @@ func TestAllocateTunLCIReusesAfterRemove(t *testing.T) {
 	sm := NewSessionManager(1, 2)
 
 	lci1, _ := sm.AllocateTunLCI()
-	s1 := &Session{LciA: lci1, LciB: 101}
-	sm.AddSession(s1)
+	s1 := &Session{GFI: GFIMod128, LciA: lci1, LciB: 101}
+	if err := sm.AddSession(s1); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	lci2, _ := sm.AllocateTunLCI()
-	s2 := &Session{LciA: lci2, LciB: 102}
-	sm.AddSession(s2)
+	s2 := &Session{GFI: GFIMod8, LciA: lci2, LciB: 102}
+	if err := sm.AddSession(s2); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	// Free LCI 1
 	sm.RemoveSession(s1)
@@ -213,8 +236,10 @@ func TestAllocateTunLCIReusesAfterRemove(t *testing.T) {
 func TestRemoveSessionNilConnB(t *testing.T) {
 	sm := NewSessionManager(1, 100)
 
-	s := &Session{LciA: 5, LciB: 99, ConnB: nil}
-	sm.AddSession(s)
+	s := &Session{GFI: GFIMod8, LciA: 5, LciB: 99, ConnB: nil}
+	if err := sm.AddSession(s); err != nil {
+		t.Errorf("AddSession: %v", err)
+	}
 
 	// Must not panic
 	sm.RemoveSession(s)
@@ -222,6 +247,50 @@ func TestRemoveSessionNilConnB(t *testing.T) {
 	if sm.GetByALCI(5) != nil {
 		t.Error("Session should no longer be in manager after remove")
 	}
+}
+
+func TestAddSessionValidation(t *testing.T) {
+	sm := NewSessionManager(LCIMin, LCIMax)
+
+	cases := []struct {
+		name string
+		s    *Session
+	}{
+		{"GFI zero", &Session{GFI: 0, LciA: LCIMin, LciB: LCIMin}},
+		{"LciA zero", &Session{GFI: GFIMod8, LciA: 0, LciB: LCIMin}},
+		{"LciA at max", &Session{GFI: GFIMod8, LciA: LCIMax + 1, LciB: LCIMin}},
+		{"LciB zero", &Session{GFI: GFIMod8, LciA: LCIMin, LciB: 0}},
+		{"LciB at max", &Session{GFI: GFIMod8, LciA: LCIMin, LciB: LCIMax + 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sm.AddSession(tc.s); err == nil {
+				t.Errorf("expected error for %s, got nil", tc.name)
+			}
+		})
+	}
+
+	// Valid min/max boundary LCI values should succeed
+	t.Run("LciA min", func(t *testing.T) {
+		if err := sm.AddSession(&Session{GFI: GFIMod8, LciA: 1, LciB: LCIMin}); err != nil {
+			t.Errorf("unexpected error for LciA=%d: %v", LCIMin, err)
+		}
+	})
+	t.Run("LciA max", func(t *testing.T) {
+		if err := sm.AddSession(&Session{GFI: GFIMod8, LciA: LCIMax, LciB: 2}); err != nil {
+			t.Errorf("unexpected error for LciA=%d: %v", LCIMax, err)
+		}
+	})
+	t.Run("LciB min", func(t *testing.T) {
+		if err := sm.AddSession(&Session{GFI: GFIMod8, LciA: 3, LciB: LCIMin}); err != nil {
+			t.Errorf("unexpected error for LciB=%d: %v", LCIMin, err)
+		}
+	})
+	t.Run("LciB max", func(t *testing.T) {
+		if err := sm.AddSession(&Session{GFI: GFIMod8, LciA: 4, LciB: LCIMax}); err != nil {
+			t.Errorf("unexpected error for LciB=%d: %v", LCIMax, err)
+		}
+	})
 }
 
 func TestSessionStateConstants(t *testing.T) {

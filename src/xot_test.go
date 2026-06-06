@@ -149,7 +149,7 @@ func TestSendXotThenReadLarge(t *testing.T) {
 	defer server.Close()
 
 	// Build a 4095-byte payload (close to the limit)
-	payload := make([]byte, 4095)
+	payload := make([]byte, MaxUserData - 1)
 	for i := range payload {
 		payload[i] = byte(i)
 	}

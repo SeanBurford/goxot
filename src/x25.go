@@ -10,7 +10,8 @@ import (
 var ErrPacketTooLong = errors.New("X.25 packet too long")
 
 const (
-	GFIStandard = 0x01
+	GFIMod8 = byte(0x01)
+	GFIMod128 = byte(0x02)
 	LCIControl  = 0
 )
 
@@ -523,9 +524,53 @@ func FormatFacilities(fac []byte) string {
 	return res
 }
 
-func CreateClearRequest(lci uint16, cause byte, diag byte) *X25Packet {
+// CreateData builds an X.25 DATA packet.
+// gfi determines the header format: GFIMod8 produces a 3-byte header,
+// GFIMod128 produces a 4-byte header.
+// pS is the send sequence number; pR is the receive sequence number.
+func CreateData(gfi byte, lci uint16, pS, pR byte, mbit bool, payload []byte) []byte {
+	hdr0 := (gfi << 4) | byte((lci>>8)&0x0F)
+	hdr1 := byte(lci & 0xFF)
+	if gfi == GFIMod128 {
+		// 4-byte header: byte2 = P(S)[7:1]|0, byte3 = P(R)[7:1]|M
+		byte3 := (pR & 0x7F) << 1
+		if mbit {
+			byte3 |= 0x01
+		}
+		pkt := make([]byte, 4+len(payload))
+		pkt[0] = hdr0
+		pkt[1] = hdr1
+		pkt[2] = (pS & 0x7F) << 1
+		pkt[3] = byte3
+		copy(pkt[4:], payload)
+		return pkt
+	}
+	// 3-byte header: byte2 = P(R)[7:5]|M[4]|P(S)[3:1]|0
+	byte2 := ((pR & 0x07) << 5) | ((pS & 0x07) << 1)
+	if mbit {
+		byte2 |= 0x10
+	}
+	pkt := make([]byte, 3+len(payload))
+	pkt[0] = hdr0
+	pkt[1] = hdr1
+	pkt[2] = byte2
+	copy(pkt[3:], payload)
+	return pkt
+}
+
+// NegotiateGFI returns the GFI to use when responding to a call request.
+// It uses the caller's GFI if lower than our preferred GFIMod128, ensuring
+// we do not request capabilities beyond what the caller supports.
+func NegotiateGFI(callerGFI byte) byte {
+	if callerGFI < GFIMod128 {
+		return callerGFI
+	}
+	return GFIMod128
+}
+
+func CreateClearRequest(gfi byte, lci uint16, cause byte, diag byte) *X25Packet {
 	return &X25Packet{
-		GFI:     GFIStandard,
+		GFI:     gfi,
 		LCI:     lci,
 		Type:    PktTypeClearRequest,
 		Payload: []byte{cause, diag},
@@ -534,9 +579,9 @@ func CreateClearRequest(lci uint16, cause byte, diag byte) *X25Packet {
 
 // CreateInterrupt builds a 4-byte X.25 INTERRUPT packet for the given LCI.
 // data is the single interrupt data octet (any value; conventionally 0x01).
-func CreateInterrupt(lci uint16, data byte) []byte {
+func CreateInterrupt(gfi byte, lci uint16, data byte) []byte {
 	return []byte{
-		(GFIStandard << 4) | byte(lci>>8),
+		(gfi << 4) | byte(lci>>8),
 		byte(lci),
 		PktTypeInterrupt,
 		data,

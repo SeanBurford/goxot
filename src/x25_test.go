@@ -175,10 +175,115 @@ func TestTypeName(t *testing.T) {
 	}
 }
 
+func TestCreateData(t *testing.T) {
+	payload := []byte{0xAA, 0xBB, 0xCC}
+	lci := uint16(0x123)
+
+	t.Run("mod8_header_size", func(t *testing.T) {
+		pkt := CreateData(GFIMod8, lci, 0, 0, false, payload)
+		if len(pkt) != 3+len(payload) {
+			t.Errorf("mod-8: want %d bytes total, got %d", 3+len(payload), len(pkt))
+		}
+		if pkt[0] != (GFIMod8<<4)|byte((lci>>8)&0x0F) {
+			t.Errorf("mod-8: wrong byte 0: got 0x%02X", pkt[0])
+		}
+		if pkt[1] != byte(lci&0xFF) {
+			t.Errorf("mod-8: wrong byte 1: got 0x%02X", pkt[1])
+		}
+		if pkt[2]&0x01 != 0 {
+			t.Errorf("mod-8: bit 0 of byte 2 must be 0 (data indicator): got 0x%02X", pkt[2])
+		}
+	})
+
+	t.Run("mod8_sequence", func(t *testing.T) {
+		// P(S)=3, P(R)=5: byte2 = (5<<5)|(3<<1) = 0b10100110 = 0xA6
+		pkt := CreateData(GFIMod8, lci, 3, 5, false, payload)
+		want := byte((5&0x07)<<5) | byte((3&0x07)<<1)
+		if pkt[2] != want {
+			t.Errorf("mod-8: byte2 want 0x%02X, got 0x%02X", want, pkt[2])
+		}
+	})
+
+	t.Run("mod8_mbit", func(t *testing.T) {
+		pkt := CreateData(GFIMod8, lci, 0, 0, true, payload)
+		if pkt[2]&0x10 == 0 {
+			t.Errorf("mod-8: M bit not set in byte 2: 0x%02X", pkt[2])
+		}
+	})
+
+	t.Run("mod128_header_size", func(t *testing.T) {
+		pkt := CreateData(GFIMod128, lci, 0, 0, false, payload)
+		if len(pkt) != 4+len(payload) {
+			t.Errorf("mod-128: want %d bytes total, got %d", 4+len(payload), len(pkt))
+		}
+		if pkt[0] != (GFIMod128<<4)|byte((lci>>8)&0x0F) {
+			t.Errorf("mod-128: wrong byte 0: got 0x%02X", pkt[0])
+		}
+		if pkt[1] != byte(lci&0xFF) {
+			t.Errorf("mod-128: wrong byte 1: got 0x%02X", pkt[1])
+		}
+		if pkt[2]&0x01 != 0 {
+			t.Errorf("mod-128: bit 0 of byte 2 must be 0 (data indicator): got 0x%02X", pkt[2])
+		}
+	})
+
+	t.Run("mod128_sequence", func(t *testing.T) {
+		// P(S)=3 → byte2 = 3<<1 = 0x06; P(R)=5 → byte3 = 5<<1 = 0x0A
+		pkt := CreateData(GFIMod128, lci, 3, 5, false, payload)
+		if pkt[2] != (3&0x7F)<<1 {
+			t.Errorf("mod-128: byte2 (P(S)) want 0x%02X, got 0x%02X", (3&0x7F)<<1, pkt[2])
+		}
+		if pkt[3] != (5&0x7F)<<1 {
+			t.Errorf("mod-128: byte3 (P(R)) want 0x%02X, got 0x%02X", (5&0x7F)<<1, pkt[3])
+		}
+	})
+
+	t.Run("mod128_mbit", func(t *testing.T) {
+		pkt := CreateData(GFIMod128, lci, 0, 0, true, payload)
+		if pkt[3]&0x01 == 0 {
+			t.Errorf("mod-128: M bit not set in byte 3: 0x%02X", pkt[3])
+		}
+	})
+
+	t.Run("payload_preserved", func(t *testing.T) {
+		for _, gfi := range []byte{GFIMod8, GFIMod128} {
+			pkt := CreateData(gfi, lci, 0, 0, false, payload)
+			headerLen := 3
+			if gfi == GFIMod128 {
+				headerLen = 4
+			}
+			if !bytes.Equal(pkt[headerLen:], payload) {
+				t.Errorf("GFI=%d: payload not preserved", gfi)
+			}
+		}
+	})
+}
+
+func TestNegotiateGFI(t *testing.T) {
+	cases := []struct {
+		callerGFI byte
+		want      byte
+		desc      string
+	}{
+		{GFIMod8, GFIMod8, "Mod8 caller → use Mod8 (lower than our preferred)"},
+		{GFIMod128, GFIMod128, "Mod128 caller → use Mod128 (equals our preferred)"},
+		{3, GFIMod128, "invalid caller GFI > Mod128 → cap at Mod128"},
+	}
+	for _, tc := range cases {
+		got := NegotiateGFI(tc.callerGFI)
+		if got != tc.want {
+			t.Errorf("NegotiateGFI(%d) [%s]: want %d, got %d", tc.callerGFI, tc.desc, tc.want, got)
+		}
+	}
+}
+
 func TestCreateClearRequest(t *testing.T) {
-	pkt := CreateClearRequest(0x123, 0x01, 0x02)
+	pkt := CreateClearRequest(GFIMod8, 0x123, 0x01, 0x02)
 	if pkt.Type != PktTypeClearRequest {
 		t.Errorf("Expected Clear Request type")
+	}
+	if pkt.GFI != 0x01 {
+		t.Errorf("Expected GFI 0x01")
 	}
 	if pkt.LCI != 0x123 {
 		t.Errorf("Expected LCI 0x123")
@@ -619,7 +724,7 @@ func TestParseCallConnectedNegative(t *testing.T) {
 
 func TestLogTrace(t *testing.T) {
 	// Smoke test: should not panic
-	LogTrace("src", "dst", CreateClearRequest(1, 0, 0))
+	LogTrace("src", "dst", CreateClearRequest(GFIMod8, 1, 0, 0))
 }
 
 func TestSerializeRoundTrip(t *testing.T) {
@@ -640,32 +745,34 @@ func TestSerializeRoundTrip(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			original := &X25Packet{
-				GFI:     1,
-				LCI:     42,
-				Type:    tc.pktType,
-				Payload: []byte{0xAA, 0xBB},
-			}
+		for _, gfi := range []byte{ GFIMod8, GFIMod128, } {
+			t.Run(tc.name, func(t *testing.T) {
+				original := &X25Packet{
+					GFI:     gfi,
+					LCI:     42,
+					Type:    tc.pktType,
+					Payload: []byte{0xAA, 0xBB},
+				}
 
-			serialized := original.Serialize()
-			parsed, err := ParseX25(serialized)
-			if err != nil {
-				t.Fatalf("ParseX25 failed: %v", err)
-			}
+				serialized := original.Serialize()
+				parsed, err := ParseX25(serialized)
+				if err != nil {
+					t.Fatalf("ParseX25 failed: %v", err)
+				}
 
-			if parsed.GFI != original.GFI {
-				t.Errorf("GFI mismatch: want %d, got %d", original.GFI, parsed.GFI)
-			}
-			if parsed.LCI != original.LCI {
-				t.Errorf("LCI mismatch: want %d, got %d", original.LCI, parsed.LCI)
-			}
-			if parsed.Type != original.Type {
-				t.Errorf("Type mismatch: want 0x%02X, got 0x%02X", original.Type, parsed.Type)
-			}
-			if !bytes.Equal(parsed.Payload, original.Payload) {
-				t.Errorf("Payload mismatch: want %v, got %v", original.Payload, parsed.Payload)
-			}
-		})
+				if parsed.GFI != original.GFI {
+					t.Errorf("GFI mismatch: want %d, got %d", original.GFI, parsed.GFI)
+				}
+				if parsed.LCI != original.LCI {
+					t.Errorf("LCI mismatch: want %d, got %d", original.LCI, parsed.LCI)
+				}
+				if parsed.Type != original.Type {
+					t.Errorf("Type mismatch: want 0x%02X, got 0x%02X", original.Type, parsed.Type)
+				}
+				if !bytes.Equal(parsed.Payload, original.Payload) {
+					t.Errorf("Payload mismatch: want %v, got %v", original.Payload, parsed.Payload)
+				}
+			})
+		}
 	}
 }

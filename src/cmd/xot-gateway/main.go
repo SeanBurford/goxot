@@ -144,11 +144,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				log.Printf("%s: %v", source, err)
 				xot.CausesGenerated.Add("packet_too_long", 1)
 				pkt, _ := xot.ParseX25(data)
+				gfi_err := xot.GFIMod8
 				lci_err := uint16(0)
 				if pkt != nil {
+					gfi_err = pkt.GFI
 					lci_err = pkt.LCI
 				}
-				clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				clr := xot.CreateClearRequest(gfi_err, lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 				xot.SendXot("unix", conn, clr.Serialize())
 			} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 				log.Printf("%s: Error reading XOT: %v", source, err)
@@ -166,7 +168,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		if err := pkt.ValidateSize(); err != nil {
 			log.Printf("%s: %v", source, err)
 			xot.CausesGenerated.Add("packet_too_long", 1)
-			clr := xot.CreateClearRequest(pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+			clr := xot.CreateClearRequest(pkt.GFI, pkt.LCI, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -180,10 +182,11 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		}
 
 		lci := pkt.LCI
+		gfi := pkt.GFI
 		called, calling, fac, _, err := pkt.ParseCallRequest()
 		if err != nil {
 			log.Printf("%s: Malformed CALL_REQ from source: %v", source, err)
-			clr := xot.CreateClearRequest(lci, xot.CauseInvalidFacility, 0)
+			clr := xot.CreateClearRequest(gfi, lci, xot.CauseInvalidFacility, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -192,13 +195,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		srv, local := cm.GetServer(called, false)
 		if srv == nil {
 			log.Printf("%s: No route for %s", source, called)
-			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
+			clr := xot.CreateClearRequest(gfi, lci, xot.CauseNumberBusy, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
 		if local {
 			log.Printf("%s: Rejecting local destination %s", source, called)
-			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
+			clr := xot.CreateClearRequest(gfi, lci, xot.CauseNumberBusy, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -218,7 +221,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		ips, err := xot.ResolveXotDestination(called, srv)
 		if err != nil {
 			log.Printf("%s: Destination resolution failed for %s: %v", source, called, err)
-			clr := xot.CreateClearRequest(lci, xot.CauseNumberBusy, 0)
+			clr := xot.CreateClearRequest(gfi, lci, xot.CauseNumberBusy, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -245,7 +248,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 		if remoteConn == nil {
 			log.Printf("%s: All connection attempts failed for %s", source, called)
-			clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
+			clr := xot.CreateClearRequest(gfi, lci, xot.CauseOutofOrder, 0)
 			xot.SendXot("unix", conn, clr.Serialize())
 			return
 		}
@@ -295,8 +298,9 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from remote", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
+							gfi_err := xot.GetGFI(d)
 							lci_err := xot.GetLCI(d)
-							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							clr := xot.CreateClearRequest(gfi_err, lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot("unix", conn, clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from remote: %v", source, err)
@@ -354,8 +358,9 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from local", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
+							gfi_err := xot.GetGFI(d)
 							lci_err := xot.GetLCI(d)
-							clr := xot.CreateClearRequest(lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							clr := xot.CreateClearRequest(gfi_err, lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot("unix", conn, clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from local: %v", source, err)
@@ -419,7 +424,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 									return
 								}
 								interruptProbeInFlight.Store(true)
-								probe := xot.CreateInterrupt(lci, 0x01)
+								probe := xot.CreateInterrupt(gfi, lci, 0x01)
 								if *trace {
 									log.Printf("%s: X.25 keepalive INTERRUPT sent on LCI %d", source, lci)
 								}
@@ -440,7 +445,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			case <-stop:
 				// Shutdown triggered
 				xot.CausesGenerated.Add(fmt.Sprintf("0x%02x", xot.CauseOutofOrder), 1)
-				clr := xot.CreateClearRequest(lci, xot.CauseOutofOrder, 0)
+				clr := xot.CreateClearRequest(gfi, lci, xot.CauseOutofOrder, 0)
 				if *trace {
 					xot.LogTrace("SHUTDOWN", source, clr)
 				}

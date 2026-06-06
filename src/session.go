@@ -21,6 +21,8 @@ type Session struct {
 	State string
 	mu    sync.Mutex
 
+	GFI   byte // negotiated GFI
+
 	// Side A (e.g. TUN)
 	LciA  uint16
 	ConnA net.Conn // nil if side A is the TUN physical interface
@@ -87,9 +89,25 @@ func (sm *SessionManager) AllocateTunLCI() (uint16, error) {
 	return 0, fmt.Errorf("LCI exhaustion in range %d-%d", sm.tunLciStart, sm.tunLciEnd)
 }
 
-func (sm *SessionManager) AddSession(s *Session) {
+func (sm *SessionManager) AddSession(s *Session) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	if s.GFI == 0 {
+		return fmt.Errorf("GFI cannot be zero")
+	}
+	if s.LciA < LCIMin {
+		return fmt.Errorf("LCI A cannot be < %d", LCIMin)
+	}
+	if s.LciA > LCIMax {
+		return fmt.Errorf("LCI A cannot be > %d", LCIMax)
+	}
+	if s.LciB < LCIMin {
+		return fmt.Errorf("LCI B cannot be < %d", LCIMin)
+	}
+	if s.LciB > LCIMax {
+		return fmt.Errorf("LCI B cannot be > %d", LCIMax)
+	}
 
 	// Unique ID including connection pointers to distinguish recycled LCIs
 	id := fmt.Sprintf("A:%p:%d-B:%p:%d", s.ConnA, s.LciA, s.ConnB, s.LciB)
@@ -106,10 +124,11 @@ func (sm *SessionManager) AddSession(s *Session) {
 		}
 		sm.byBConnLCI[s.ConnB][s.LciB] = s
 	}
+	return nil
 }
 
 // AllocateAndAddTunSession atomizes LCI allocation and session creation for TUN-side LCIs
-func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomingLCI uint16) (*Session, error) {
+func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomingGFI byte, incomingLCI uint16) (*Session, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -130,6 +149,7 @@ func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomi
 			// Advance cursor past this LCI for the next allocation.
 			sm.nextLCI = sm.tunLciStart + (lci-sm.tunLciStart+1)%rangeSize
 			s := &Session{
+				GFI:   NegotiateGFI(incomingGFI),
 				LciA:  lci,
 				LciB:  incomingLCI,
 				ConnB: incomingConn,

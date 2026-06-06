@@ -86,6 +86,7 @@ func (n *tunNode) writeFrame(header byte, data []byte) error {
 
 // loopSession records a forwarded X.25 call between two TUN nodes.
 type loopSession struct {
+	GFI  byte   // GFI for the session
 	tunA int    // source node index
 	lciA uint16 // LCI on tunA (kernel-assigned, from CALL_REQ)
 	tunB int    // destination node index
@@ -315,13 +316,14 @@ func (r *relay) handleTunRead(n *tunNode) {
 			continue
 		}
 
+		gfi := xot.GetGFI(payload)
 		lci := xot.GetLCI(payload)
 
 		if pktType == xot.PktTypeCallRequest {
 			// RACE-A: payload aliases buf; copy before any goroutine or async op.
 			pktData := make([]byte, len(payload))
 			copy(pktData, payload)
-			r.handleCallRequest(n, lci, pktData)
+			r.handleCallRequest(n, gfi, lci, pktData)
 			continue
 		}
 
@@ -332,14 +334,14 @@ func (r *relay) handleTunRead(n *tunNode) {
 // handleRestart processes a RESTART_REQUEST from the kernel, sends RESTART_CONF,
 // and transitions the link to operational. Active sessions on this node are cleared
 // if the link was already operational (COMPAT005).
-func (r *relay) handleRestart(n *tunNode, _ []byte) {
+func (r *relay) handleRestart(n *tunNode, payload []byte) {
 	src := n.name
 	if atomic.LoadInt32(&n.linkState) == linkOperational {
 		log.Printf("%s: RESTART_REQ in operational state — clearing sessions", src)
 		r.clearAllForNode(n)
 	}
 
-	conf := []byte{xot.GFIStandard << 4, 0x00, xot.PktTypeRestartConfirm}
+	conf := []byte{payload[0] & 0xF0, 0x00, xot.PktTypeRestartConfirm}
 	n.writeFrame(tun.HeaderData, conf)
 
 	if atomic.CompareAndSwapInt32(&n.linkState, linkConnecting, linkOperational) {
@@ -352,31 +354,31 @@ func (r *relay) handleRestart(n *tunNode, _ []byte) {
 // handleCallRequest processes an incoming CALL_REQUEST on node src with the given
 // LCI. It resolves the destination node by X.121 address, allocates a relay LCI on
 // the destination, records the session, and forwards the packet.
-func (r *relay) handleCallRequest(src *tunNode, srcLCI uint16, payload []byte) {
+func (r *relay) handleCallRequest(src *tunNode, srcGFI byte, srcLCI uint16, payload []byte) {
 	pkt, err := xot.ParseX25(payload)
 	if err != nil {
 		log.Printf("%s: CALL_REQ parse error: %v", src.name, err)
-		r.sendClear(src, srcLCI, xot.CauseLocalProcedureError, 0)
+		r.sendClear(src, srcGFI, srcLCI, xot.CauseLocalProcedureError, 0)
 		return
 	}
 
 	called, calling, _, _, err := pkt.ParseCallRequest()
 	if err != nil {
 		log.Printf("%s: CALL_REQ address parse error: %v", src.name, err)
-		r.sendClear(src, srcLCI, xot.CauseLocalProcedureError, 0)
+		r.sendClear(src, srcGFI, srcLCI, xot.CauseLocalProcedureError, 0)
 		return
 	}
 
 	dst := r.findNode(called)
 	if dst == nil {
 		log.Printf("%s: no route for called address %s (calling %s)", src.name, called, calling)
-		r.sendClear(src, srcLCI, xot.CauseNetworkCongestion, 0)
+		r.sendClear(src, srcGFI, srcLCI, xot.CauseNetworkCongestion, 0)
 		return
 	}
 
 	if atomic.LoadInt32(&dst.linkState) != linkOperational {
 		log.Printf("%s: destination %s link not operational", src.name, dst.name)
-		r.sendClear(src, srcLCI, xot.CauseNetworkCongestion, 0)
+		r.sendClear(src, srcGFI, srcLCI, xot.CauseNetworkCongestion, 0)
 		return
 	}
 
@@ -393,28 +395,28 @@ func (r *relay) handleCallRequest(src *tunNode, srcLCI uint16, payload []byte) {
 	if err != nil {
 		r.sm.mu.Unlock()
 		log.Printf("%s: %v", src.name, err)
-		r.sendClear(src, srcLCI, xot.CauseNetworkCongestion, 0)
+		r.sendClear(src, srcGFI, srcLCI, xot.CauseNetworkCongestion, 0)
 		return
 	}
-	s := &loopSession{tunA: src.idx, lciA: srcLCI, tunB: dst.idx, lciB: dstLCI}
+	s := &loopSession{GFI: xot.NegotiateGFI(srcGFI), tunA: src.idx, lciA: srcLCI, tunB: dst.idx, lciB: dstLCI}
 	r.sm.add(s)
 	r.sm.mu.Unlock()
 
 	if *trace {
-		log.Printf("%s(%d)→%s(%d) CALL_REQ calling=%s called=%s",
-			src.name, srcLCI, dst.name, dstLCI, calling, called)
+		log.Printf("%s(%d)→%s(%d) CALL_REQ calling=%s called=%s GFI=%d",
+			src.name, srcLCI, dst.name, dstLCI, calling, called, srcGFI)
 	}
 	xot.InterfaceCallRequest.Add(src.name, 1)
 
 	// Remap LCI in payload and forward to destination TUN.
-	payload[0] = (payload[0] & 0xF0) | byte((dstLCI>>8)&0x0F)
+	payload[0] = (srcGFI << 4) | byte((dstLCI>>8)&0x0F)
 	payload[1] = byte(dstLCI & 0xFF)
 	if err := dst.writeFrame(tun.HeaderData, payload); err != nil {
 		log.Printf("%s: write CALL_REQ to %s: %v", src.name, dst.name, err)
 		r.sm.mu.Lock()
 		r.sm.remove(s)
 		r.sm.mu.Unlock()
-		r.sendClear(src, srcLCI, xot.CauseNetworkCongestion, 0)
+		r.sendClear(src, srcGFI, srcLCI, xot.CauseNetworkCongestion, 0)
 	}
 }
 
@@ -430,7 +432,7 @@ func (r *relay) forwardPacket(src *tunNode, lci uint16, payload []byte, pktType 
 			if *trace {
 				log.Printf("%s: no session for LCI %d, sending CLEAR", src.name, lci)
 			}
-			r.sendClear(src, lci, xot.CauseNetworkCongestion, 0)
+			r.sendClear(src, xot.GetGFI(payload), lci, xot.CauseNetworkCongestion, 0)
 		}
 		return
 	}
@@ -493,18 +495,18 @@ func (r *relay) clearAllForNode(n *tunNode) {
 		// Send CLEAR to whichever side is *not* n.
 		if s.tunA == n.idx {
 			peer := r.nodes[s.tunB]
-			r.sendClear(peer, s.lciB, xot.CauseNetworkCongestion, 0)
+			r.sendClear(peer, s.GFI, s.lciB, xot.CauseNetworkCongestion, 0)
 		} else {
 			peer := r.nodes[s.tunA]
-			r.sendClear(peer, s.lciA, xot.CauseNetworkCongestion, 0)
+			r.sendClear(peer, s.GFI, s.lciA, xot.CauseNetworkCongestion, 0)
 		}
 	}
 	log.Printf("%s: cleared %d sessions", n.name, len(dead))
 }
 
 // sendClear writes a CLEAR_REQUEST to node n for the given LCI.
-func (r *relay) sendClear(n *tunNode, lci uint16, cause, diag byte) {
-	clr := xot.CreateClearRequest(lci, cause, diag)
+func (r *relay) sendClear(n *tunNode, gfi byte, lci uint16, cause, diag byte) {
+	clr := xot.CreateClearRequest(gfi, lci, cause, diag)
 	n.writeFrame(tun.HeaderData, clr.Serialize())
 }
 
