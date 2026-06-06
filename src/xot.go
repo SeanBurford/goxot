@@ -63,6 +63,9 @@ func SetTCPKeepalive(conn net.Conn, interval time.Duration) error {
 }
 
 func isPacketConn(conn net.Conn) bool {
+	if conn == nil {
+		return false
+	}
 	network := conn.LocalAddr().Network()
 	return network == "unixpacket"
 }
@@ -84,6 +87,9 @@ func updateCallRequestCount(ifname string, data []byte) {
 
 // SendXot sends an X.25 packet over a TCP connection with RFC 1613 framing
 func SendXot(ifname string, conn net.Conn, data []byte) error {
+	if conn == nil {
+		return fmt.Errorf("SendXot: nil connection")
+	}
 	length := uint16(len(data))
 	updateCallRequestCount(ifname, data)
 	// For packet-oriented sockets, we MUST send in a single Write.
@@ -124,6 +130,9 @@ func SendXot(ifname string, conn net.Conn, data []byte) error {
 // ReadXotInto reads an X.25 packet into the provided buffer.
 // It returns the sub-slice of buf containing the data, or an error.
 func ReadXotInto(ifname string, conn net.Conn, buf []byte) ([]byte, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("ReadXotInto: nil connection")
+	}
 	if isPacketConn(conn) {
 		n, err := conn.Read(buf)
 		if err != nil {

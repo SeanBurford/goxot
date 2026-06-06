@@ -223,3 +223,26 @@ func TestGetFdNonSyscallConn(t *testing.T) {
 		t.Errorf("Expected fd=0 for non-syscall conn, got %d", fd)
 	}
 }
+
+func TestGetFdNilConn(t *testing.T) {
+	// nil interface: comma-ok type assertion is safe and returns (nil, false).
+	fd := GetFd(nil)
+	if fd != 0 {
+		t.Errorf("Expected fd=0 for nil conn, got %d", fd)
+	}
+}
+
+func TestSendXotNilConn(t *testing.T) {
+	err := SendXot("test", nil, []byte{0x10, 0x01, 0x02})
+	if err == nil {
+		t.Fatal("expected error from SendXot with nil conn, got nil")
+	}
+}
+
+func TestReadXotIntoNilConn(t *testing.T) {
+	buf := make([]byte, MaxXOTPacketSize)
+	_, err := ReadXotInto("test", nil, buf)
+	if err == nil {
+		t.Fatal("expected error from ReadXotInto with nil conn, got nil")
+	}
+}
