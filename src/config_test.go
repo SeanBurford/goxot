@@ -296,3 +296,63 @@ func TestConfigLCIDefaults(t *testing.T) {
 		t.Errorf("Expected LciEnd=2048, got %d", tun.LciEnd)
 	}
 }
+
+func TestConfigModuloDefault(t *testing.T) {
+	path := writeConfigFile(t, `{"servers": []}`)
+
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+
+	gw := cm.GetTunGatewayConfig()
+	if gw.Modulo != 8 {
+		t.Errorf("tun-gateway: expected default modulo 8, got %d", gw.Modulo)
+	}
+	lb := cm.GetTunLoopbackConfig()
+	if lb.Modulo != 8 {
+		t.Errorf("tun-loopback: expected default modulo 8, got %d", lb.Modulo)
+	}
+}
+
+func TestConfigModuloValid(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"tun-gateway":  {"modulo": 128},
+		"tun-loopback": {"modulo": 8}
+	}`)
+
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+
+	gw := cm.GetTunGatewayConfig()
+	if gw.Modulo != 128 {
+		t.Errorf("tun-gateway: expected modulo 128, got %d", gw.Modulo)
+	}
+	lb := cm.GetTunLoopbackConfig()
+	if lb.Modulo != 8 {
+		t.Errorf("tun-loopback: expected modulo 8, got %d", lb.Modulo)
+	}
+}
+
+func TestConfigModuloInvalid(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"tun-gateway":  {"modulo": 64},
+		"tun-loopback": {"modulo": 7}
+	}`)
+
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+
+	gw := cm.GetTunGatewayConfig()
+	if gw.Modulo != 8 {
+		t.Errorf("tun-gateway: invalid modulo should default to 8, got %d", gw.Modulo)
+	}
+	lb := cm.GetTunLoopbackConfig()
+	if lb.Modulo != 8 {
+		t.Errorf("tun-loopback: invalid modulo should default to 8, got %d", lb.Modulo)
+	}
+}

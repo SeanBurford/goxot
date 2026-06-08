@@ -178,9 +178,10 @@ func DeleteRoute(ifaceName, prefix string, digits int) error {
 }
 
 // SetSubscription configures the X.25 subscription on ifaceName:
-// enables standard facility negotiation and sets extended mode when lciEnd > 255.
-// Call after Setup to configure LCI range partitioning.
-func SetSubscription(ifaceName string, lciStart, lciEnd int) error {
+// enables standard facility negotiation and sets extended window modulus.
+// modulo must be 8 or 128; any other value is treated as 8.
+// Call after Setup to configure the interface subscription.
+func SetSubscription(ifaceName string, modulo int) error {
 	fd, err := syscall.Socket(syscall.AF_X25, syscall.SOCK_SEQPACKET, 0)
 	if err != nil {
 		return err
@@ -188,7 +189,7 @@ func SetSubscription(ifaceName string, lciStart, lciEnd int) error {
 	defer syscall.Close(fd)
 
 	extended := uint32(0)
-	if lciEnd > 255 {
+	if modulo == 128 {
 		extended = 1
 	}
 	sub := x25SubscripStruct{

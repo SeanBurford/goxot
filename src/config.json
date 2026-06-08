@@ -8,11 +8,13 @@
   "tun-gateway": {
     "lci_start": 1024,
     "lci_end": 3071,
+    "modulo": 8,
     "stats-port": 8003
   },
   "tun-loopback": {
     "lci_start": 3072,
     "lci_end": 4095,
+    "modulo": 8,
     "stats-port": 8004,
     "routes": ["127001", "127002"]
   },

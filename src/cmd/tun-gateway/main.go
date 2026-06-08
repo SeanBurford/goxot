@@ -105,7 +105,7 @@ func main() {
 	if cm != nil {
 		tunCfg = cm.GetTunGatewayConfig().TunConfig
 	} else {
-		tunCfg = xot.TunConfig{LciStart: 1024, LciEnd: 4095}
+		tunCfg = xot.TunConfig{LciStart: 1024, LciEnd: 4095, Modulo: 8}
 	}
 
 	ifce, err := tun.Setup(*tunName)
@@ -113,7 +113,7 @@ func main() {
 		log.Fatalf("Failed to setup TUN: %v", err)
 	}
 
-	if err := tun.SetSubscription(*tunName, tunCfg.LciStart, tunCfg.LciEnd); err != nil {
+	if err := tun.SetSubscription(*tunName, tunCfg.Modulo); err != nil {
 		log.Printf("Warning: failed to set X.25 subscription: %v", err)
 	}
 

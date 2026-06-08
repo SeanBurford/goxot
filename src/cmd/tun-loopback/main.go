@@ -200,7 +200,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to setup TUN %s: %v", name, err)
 		}
-		if err := tun.SetSubscription(name, int(lciStart), int(lciEnd)); err != nil {
+		if err := tun.SetSubscription(name, cfg.Modulo); err != nil {
 			log.Printf("Warning: SetSubscription %s: %v", name, err)
 		}
 		// Route for this address points to this TUN.

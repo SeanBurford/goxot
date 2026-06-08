@@ -32,6 +32,7 @@ type XotServerConfig struct {
 type TunConfig struct {
 	LciStart int `json:"lci_start"` // Start of TUN LCI range
 	LciEnd   int `json:"lci_end"`   // End of TUN LCI range
+	Modulo   int `json:"modulo"`    // Window modulus: 8 (default) or 128
 }
 
 type ServiceConfig struct {
@@ -123,6 +124,12 @@ func (cm *ConfigManager) Reload() (bool, error) {
 		cfg.TunGateway.LciStart = LciStartDefault
 		cfg.TunGateway.LciEnd = LciEndDefault
 	}
+	if cfg.TunGateway.Modulo == 0 {
+		cfg.TunGateway.Modulo = 8
+	} else if cfg.TunGateway.Modulo != 8 && cfg.TunGateway.Modulo != 128 {
+		log.Printf("Warning: tun-gateway modulo %d is invalid (must be 8 or 128), defaulting to 8", cfg.TunGateway.Modulo)
+		cfg.TunGateway.Modulo = 8
+	}
 
 	// Set defaults and clamp for TunLoopback.
 	if cfg.TunLoopback.LciStart == 0 {
@@ -144,6 +151,12 @@ func (cm *ConfigManager) Reload() (bool, error) {
 			cfg.TunLoopback.LciStart, cfg.TunLoopback.LciEnd, LciStartDefault, LciEndDefault)
 		cfg.TunLoopback.LciStart = LciStartDefault
 		cfg.TunLoopback.LciEnd = LciEndDefault
+	}
+	if cfg.TunLoopback.Modulo == 0 {
+		cfg.TunLoopback.Modulo = 8
+	} else if cfg.TunLoopback.Modulo != 8 && cfg.TunLoopback.Modulo != 128 {
+		log.Printf("Warning: tun-loopback modulo %d is invalid (must be 8 or 128), defaulting to 8", cfg.TunLoopback.Modulo)
+		cfg.TunLoopback.Modulo = 8
 	}
 
 	// Set defaults and validate servers
