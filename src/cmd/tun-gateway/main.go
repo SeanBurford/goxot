@@ -87,26 +87,16 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: Failed to initialize config manager: %v", err)
 	}
-	if cm != nil {
-		if _, err := cm.Reload(); err != nil {
-			log.Printf("Warning: Failed to load config: %v", err)
-		}
-	}
 
 	actualStatsPort := *statsPort
-	if actualStatsPort == 0 && cm != nil {
+	if actualStatsPort == 0 {
 		actualStatsPort = cm.GetTunGatewayConfig().StatsPort
 	}
 	if actualStatsPort > 0 {
 		xot.StartStatsServer(actualStatsPort)
 	}
 
-	var tunCfg xot.TunConfig
-	if cm != nil {
-		tunCfg = cm.GetTunGatewayConfig().TunConfig
-	} else {
-		tunCfg = xot.TunConfig{LciStart: 1024, LciEnd: 4095, Modulo: 8}
-	}
+	tunCfg := cm.GetTunGatewayConfig().TunConfig
 
 	ifce, err := tun.Setup(*tunName)
 	if err != nil {

@@ -37,14 +37,9 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: Failed to initialize config manager: %v", err)
 	}
-	if cm != nil {
-		if _, err := cm.Reload(); err != nil {
-			log.Printf("Warning: Failed to load config: %v", err)
-		}
-	}
 
         actualStatsPort := *statsPort
-        if actualStatsPort == 0 && cm != nil {
+        if actualStatsPort == 0 {
                 actualStatsPort = cm.GetXotServerConfig().StatsPort
         }
         if actualStatsPort > 0 {

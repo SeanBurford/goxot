@@ -72,13 +72,14 @@ type ConfigManager struct {
 
 func NewConfigManager(filename string) (*ConfigManager, error) {
 	cm := &ConfigManager{filename: filename}
-	if _, err := cm.Reload(); err != nil {
-		return nil, err
-	}
-	return cm, nil
+	_, err := cm.Reload()
+	return cm, err
 }
 
 func (cm *ConfigManager) Reload() (bool, error) {
+	if cm == nil {
+		return false, nil
+	}
 	info, err := os.Stat(cm.filename)
 	if err != nil {
 		return false, err
@@ -211,15 +212,21 @@ func (cm *ConfigManager) Reload() (bool, error) {
 }
 
 func (cm *ConfigManager) GetTunGatewayConfig() TunGatewayConfig {
+	if cm == nil {
+		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault, Modulo: 8}}
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
-		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
+		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault, Modulo: 8}}
 	}
 	return cm.config.TunGateway
 }
 
 func (cm *ConfigManager) GetTunLoopbackConfig() TunLoopbackConfig {
+	if cm == nil {
+		return TunLoopbackConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
@@ -229,6 +236,9 @@ func (cm *ConfigManager) GetTunLoopbackConfig() TunLoopbackConfig {
 }
 
 func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
+	if cm == nil {
+		return ServiceConfig{}
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
@@ -238,6 +248,9 @@ func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
 }
 
 func (cm *ConfigManager) GetXotServerConfig() ServiceConfig {
+	if cm == nil {
+		return ServiceConfig{}
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
@@ -247,6 +260,9 @@ func (cm *ConfigManager) GetXotServerConfig() ServiceConfig {
 }
 
 func (cm *ConfigManager) GetServers() []XotServerConfig {
+	if cm == nil {
+		return nil
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
@@ -258,6 +274,9 @@ func (cm *ConfigManager) GetServers() []XotServerConfig {
 }
 
 func (cm *ConfigManager) GetDestinations() map[string]DestinationConfig {
+	if cm == nil {
+		return nil
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
@@ -271,6 +290,9 @@ func (cm *ConfigManager) GetDestinations() map[string]DestinationConfig {
 }
 
 func (cm *ConfigManager) GetDestination(addr string) *DestinationConfig {
+	if cm == nil {
+		return nil
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if cm.config == nil {
@@ -318,12 +340,19 @@ func isLocalIP(ip string) bool {
 // assigned to a local interface the flag is true; if resolution fails or no
 // server is found the flag defaults to defaultLocal.
 func (cm *ConfigManager) GetServer(x121Addr string, defaultLocal bool) (*XotServerConfig, bool) {
+	if cm == nil {
+		return nil, defaultLocal
+	}
 	// Reload config if it changed on disk
 	if _, err := cm.Reload(); err != nil {
 		log.Printf("Warning: failed to reload config: %v", err)
 	}
 
 	cm.mu.RLock()
+	if cm.config == nil {
+		cm.mu.RUnlock()
+		return nil, defaultLocal
+	}
 	var best *XotServerConfig
 	bestLen := -1
 	for _, srv := range cm.config.Servers {

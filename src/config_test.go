@@ -280,6 +280,31 @@ func TestConfigInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestConfigManagerRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+
+	cm, err := NewConfigManager(path)
+	if err == nil {
+		t.Error("Expected error for missing config file")
+	}
+	if cm == nil {
+		t.Fatal("NewConfigManager must return non-nil cm even when config is absent")
+	}
+	if cm.GetServers() != nil {
+		t.Error("Expected nil servers before config exists")
+	}
+
+	if err := os.WriteFile(path, []byte(`{"servers": [{"prefix": "1/1", "ip": "1.2.3.4"}]}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := cm.Reload(); err != nil {
+		t.Fatalf("Reload after config created: %v", err)
+	}
+	if servers := cm.GetServers(); len(servers) != 1 {
+		t.Errorf("Expected 1 server after reload, got %d", len(servers))
+	}
+}
+
 func TestConfigLCIDefaults(t *testing.T) {
 	path := writeConfigFile(t, `{"servers": []}`)
 
