@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	xot "github.com/SeanBurford/goxot"
-	"github.com/SeanBurford/goxot/tun"
+	xot "github.com/SeanBurford/goxot/src"
+	"github.com/SeanBurford/goxot/src/tun"
 )
 
 var (

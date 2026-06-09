@@ -10,7 +10,7 @@ import (
 	"time"
 	"unsafe"
 
-	xot "github.com/SeanBurford/goxot"
+	xot "github.com/SeanBurford/goxot/src"
 )
 
 const (

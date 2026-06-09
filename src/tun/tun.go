@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	xot "github.com/SeanBurford/goxot"
+	xot "github.com/SeanBurford/goxot/src"
 )
 
 // PI control header bytes exchanged with the kernel (x25device.h).

@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	xot "github.com/SeanBurford/goxot"
+	xot "github.com/SeanBurford/goxot/src"
 )
 
 var (
