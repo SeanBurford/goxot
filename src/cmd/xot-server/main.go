@@ -23,7 +23,7 @@ var (
 	configPath  = flag.String("config", "config.json", "Path to config file")
 	trace       = flag.Bool("trace", false, "Enable trace logging")
 	gracePeriod = flag.Int("graceperiod", 5, "Grace period in seconds for SIGHUP shutdown")
-	statsPort   = flag.Int("stats-port", 0, "Port for /varz stats (0 to disable)")
+	statsPort   = flag.String("stats-port", "", "Address for /varz stats (port or host:port; empty to disable)")
 
 	shuttingDown atomic.Bool
 	activeConns  sync.Map // net.Conn -> chan struct{} (stop channel)
@@ -38,13 +38,13 @@ func main() {
 		log.Printf("Warning: Failed to initialize config manager: %v", err)
 	}
 
-        actualStatsPort := *statsPort
-        if actualStatsPort == 0 {
-                actualStatsPort = cm.GetXotServerConfig().StatsPort
-        }
-        if actualStatsPort > 0 {
-                xot.StartStatsServer(actualStatsPort)
-        }
+	statsAddr := *statsPort
+	if statsAddr == "" {
+		statsAddr = string(cm.GetXotServerConfig().StatsPort)
+	}
+	if statsAddr != "" {
+		xot.StartStatsServer(statsAddr)
+	}
 
 	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {

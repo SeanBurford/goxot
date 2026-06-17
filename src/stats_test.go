@@ -1,6 +1,7 @@
 package xot
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -10,8 +11,8 @@ import (
 )
 
 func TestStartStatsServerZeroPort(t *testing.T) {
-	// port == 0 is a no-op; verify no panic
-	StartStatsServer(0)
+	// empty addr is a no-op; verify no panic
+	StartStatsServer("")
 }
 
 func TestStartStatsServerEnabled(t *testing.T) {
@@ -23,7 +24,7 @@ func TestStartStatsServerEnabled(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	StartStatsServer(port)
+	StartStatsServer(fmt.Sprintf("127.0.0.1:%d", port))
 
 	// Give the goroutine time to start
 	time.Sleep(50 * time.Millisecond)

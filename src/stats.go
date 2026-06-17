@@ -43,14 +43,13 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func StartStatsServer(port int) {
-	if port == 0 {
+func StartStatsServer(addr string) {
+	if addr == "" {
 		return
 	}
 	// Also expose on /varz as requested
 	http.Handle("/varz", corsMiddleware(expvar.Handler()))
 	go func() {
-		addr := fmt.Sprintf(":%d", port)
 		fmt.Printf("Stats server listening on %s\n", addr)
 		// We use http.ListenAndServe which uses DefaultServeMux
 		// expvar already registers /debug/vars on DefaultServeMux

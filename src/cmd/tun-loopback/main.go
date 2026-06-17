@@ -29,7 +29,7 @@ var (
 	configPath = flag.String("config", "config.json", "Path to config file")
 	tunPrefix  = flag.String("tun-prefix", "tunlb", "Prefix for TUN interface names (e.g. tunlb → tunlb0, tunlb1, ...)")
 	trace      = flag.Bool("trace", false, "Enable packet trace logging")
-	statsPort  = flag.Int("stats-port", 0, "Port for /varz stats (0 to disable)")
+	statsPort  = flag.String("stats-port", "", "Address for /varz stats (port or host:port; empty to disable)")
 )
 
 // Link state values (atomic int32).
@@ -182,12 +182,12 @@ func main() {
 		log.Fatal("tun-loopback: no routes configured in tun-loopback.routes")
 	}
 
-	actualStatsPort := *statsPort
-	if actualStatsPort == 0 {
-		actualStatsPort = cfg.StatsPort
+	statsAddr := *statsPort
+	if statsAddr == "" {
+		statsAddr = string(cfg.StatsPort)
 	}
-	if actualStatsPort > 0 {
-		xot.StartStatsServer(actualStatsPort)
+	if statsAddr != "" {
+		xot.StartStatsServer(statsAddr)
 	}
 
 	lciStart := uint16(cfg.LciStart)

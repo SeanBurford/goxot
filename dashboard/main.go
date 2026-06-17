@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	xot "github.com/SeanBurford/goxot/src"
 )
 
 // VarzCache stores the cached response and its expiration time
@@ -18,14 +21,20 @@ type VarzCache struct {
 	Expiration time.Time
 }
 
-type ServiceConfig struct {
-	StatsPort int `json:"stats-port"`
-}
-
-type Config struct {
-	XotServer  ServiceConfig `json:"xot-server"`
-	XotGateway ServiceConfig `json:"xot-gateway"`
-	TunGateway ServiceConfig `json:"tun-gateway"`
+// varzURL returns the HTTP /varz URL for addr. If addr has no explicit host,
+// fallbackHost is used.
+func varzURL(a xot.AddrSpec, fallbackHost string) string {
+	if a == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(string(a))
+	if err != nil {
+		return ""
+	}
+	if host == "" {
+		host = fallbackHost
+	}
+	return fmt.Sprintf("http://%s/varz", net.JoinHostPort(host, port))
 }
 
 var (
@@ -33,7 +42,7 @@ var (
 	cacheMutex sync.RWMutex
 	serverIP   string
 	configFile string
-	config     Config
+	config     xot.Config
 )
 
 const CacheDuration = 990 * time.Millisecond
@@ -59,11 +68,11 @@ func main() {
 }
 
 func loadConfig() {
-	// Default ports
-	config = Config{
-		XotServer:  ServiceConfig{StatsPort: 8001},
-		XotGateway: ServiceConfig{StatsPort: 8002},
-		TunGateway: ServiceConfig{StatsPort: 8003},
+	// Default stats ports
+	config = xot.Config{
+		XotServer:  xot.ServiceConfig{StatsPort: ":8001"},
+		XotGateway: xot.ServiceConfig{StatsPort: ":8002"},
+		TunGateway: xot.TunGatewayConfig{ServiceConfig: xot.ServiceConfig{StatsPort: ":8003"}},
 	}
 
 	data, err := os.ReadFile(configFile)
@@ -100,20 +109,24 @@ func handleVarzProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var statsPort int
+	var statsAddr xot.AddrSpec
 	switch service {
 	case "xot-server":
-		statsPort = config.XotServer.StatsPort
+		statsAddr = config.XotServer.StatsPort
 	case "xot-gateway":
-		statsPort = config.XotGateway.StatsPort
+		statsAddr = config.XotGateway.StatsPort
 	case "tun-gateway":
-		statsPort = config.TunGateway.StatsPort
+		statsAddr = config.TunGateway.StatsPort
 	default:
 		http.Error(w, "Invalid service name", http.StatusBadRequest)
 		return
 	}
 
-	targetURL := fmt.Sprintf("http://%s:%d/varz", serverIP, statsPort)
+	targetURL := varzURL(statsAddr, serverIP)
+	if targetURL == "" {
+		http.Error(w, "Stats port not configured for service", http.StatusServiceUnavailable)
+		return
+	}
 
 	// Check cache
 	cacheMutex.RLock()
@@ -149,8 +162,8 @@ func handleVarzProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var data interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
+	var jsonData interface{}
+	if err := json.Unmarshal(body, &jsonData); err != nil {
 		http.Error(w, "Error parsing JSON from target", http.StatusInternalServerError)
 		return
 	}
@@ -158,7 +171,7 @@ func handleVarzProxy(w http.ResponseWriter, r *http.Request) {
 	// Update cache
 	cacheMutex.Lock()
 	cache[targetURL] = VarzCache{
-		Data:       data,
+		Data:       jsonData,
 		Expiration: time.Now().Add(CacheDuration),
 	}
 	cacheMutex.Unlock()

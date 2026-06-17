@@ -21,7 +21,7 @@ var (
 	configPath  = flag.String("config", "config.json", "Path to config file")
 	trace       = flag.Bool("trace", false, "Enable trace logging")
 	gracePeriod = flag.Int("graceperiod", 5, "Grace period in seconds for SIGHUP shutdown")
-	statsPort   = flag.Int("stats-port", 0, "Port for /varz stats (0 to disable)")
+	statsPort   = flag.String("stats-port", "", "Address for /varz stats (port or host:port; empty to disable)")
 
 	shuttingDown atomic.Bool
 	activeConns  sync.Map // net.Conn -> chan struct{} (stop channel)
@@ -36,13 +36,13 @@ func main() {
 		log.Printf("Warning: Failed to initialize config manager: %v", err)
 	}
 
-        actualStatsPort := *statsPort
-        if actualStatsPort == 0 {
-                actualStatsPort = cm.GetXotGatewayConfig().StatsPort
-        }
-        if actualStatsPort > 0 {
-                xot.StartStatsServer(actualStatsPort)
-        }
+	statsAddr := *statsPort
+	if statsAddr == "" {
+		statsAddr = string(cm.GetXotGatewayConfig().StatsPort)
+	}
+	if statsAddr != "" {
+		xot.StartStatsServer(statsAddr)
+	}
 
 	sockPath := "/tmp/xot_gwy.sock"
 	os.Remove(sockPath)
@@ -225,7 +225,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 		var connectedIP string
 
 		for _, ip := range ips {
-			addr := fmt.Sprintf("%s:%d", ip, srv.Port)
+			addr := srv.Port.DialAddr(ip)
 				c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
 				xot.SetNoDelay(c)

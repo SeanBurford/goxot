@@ -3,6 +3,7 @@ package xot
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -20,13 +21,13 @@ const (
 )
 
 type XotServerConfig struct {
-	Prefix              string `json:"prefix"`               // X.121 prefix (e.g., "123/3")
-	IP                  string `json:"ip"`                   // XOT server IP
-	Port                int    `json:"port"`                 // Port (default PortDefault)
-	DNSPattern          string `json:"dns_pattern"`          // Regex for DNS lookup
-	DNSName             string `json:"dns_name"`             // DNS name template (e.g., "\2.\1.example.org")
-	TCPKeepaliveInterval *int  `json:"tcp-keepalive-interval"` // TCP keepalive idle seconds; nil→30, 0→disabled
-	X25KeepaliveInterval int   `json:"x25-keepalive-interval"` // X.25 INTERRUPT keepalive seconds; 0→disabled (default)
+	Prefix              string   `json:"prefix"`               // X.121 prefix (e.g., "123/3")
+	IP                  string   `json:"ip"`                   // XOT server IP
+	Port                AddrSpec `json:"port"`                 // Port or host:port (default PortDefault)
+	DNSPattern          string   `json:"dns_pattern"`          // Regex for DNS lookup
+	DNSName             string   `json:"dns_name"`             // DNS name template (e.g., "\2.\1.example.org")
+	TCPKeepaliveInterval *int    `json:"tcp-keepalive-interval"` // TCP keepalive idle seconds; nil→30, 0→disabled
+	X25KeepaliveInterval int     `json:"x25-keepalive-interval"` // X.25 INTERRUPT keepalive seconds; 0→disabled (default)
 }
 
 type TunConfig struct {
@@ -36,7 +37,7 @@ type TunConfig struct {
 }
 
 type ServiceConfig struct {
-	StatsPort int `json:"stats-port"`
+	StatsPort AddrSpec `json:"stats-port"`
 }
 
 type TunGatewayConfig struct {
@@ -164,8 +165,8 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	validServers := make([]XotServerConfig, 0, len(cfg.Servers))
 	for i := range cfg.Servers {
 		srv := cfg.Servers[i]
-		if srv.Port == 0 {
-			srv.Port = PortDefault
+		if srv.Port == "" {
+			srv.Port = AddrSpec(fmt.Sprintf(":%d", PortDefault))
 		}
 		if srv.TCPKeepaliveInterval == nil {
 			v := TCPKeepaliveDefault

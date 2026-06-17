@@ -22,7 +22,7 @@ var (
 	tunName    = flag.String("tun", "tun0", "TUN interface name")
 	configPath = flag.String("config", "config.json", "Path to config file")
 	trace      = flag.Bool("trace", false, "Enable trace logging")
-	statsPort  = flag.Int("stats-port", 0, "Port for /varz stats (0 to disable)")
+	statsPort  = flag.String("stats-port", "", "Address for /varz stats (port or host:port; empty to disable)")
 )
 
 const (
@@ -88,12 +88,12 @@ func main() {
 		log.Printf("Warning: Failed to initialize config manager: %v", err)
 	}
 
-	actualStatsPort := *statsPort
-	if actualStatsPort == 0 {
-		actualStatsPort = cm.GetTunGatewayConfig().StatsPort
+	statsAddr := *statsPort
+	if statsAddr == "" {
+		statsAddr = string(cm.GetTunGatewayConfig().StatsPort)
 	}
-	if actualStatsPort > 0 {
-		xot.StartStatsServer(actualStatsPort)
+	if statsAddr != "" {
+		xot.StartStatsServer(statsAddr)
 	}
 
 	tunCfg := cm.GetTunGatewayConfig().TunConfig

@@ -32,13 +32,13 @@ func TestConfigManager(t *testing.T) {
 	}
 
 	xgw := cm.GetXotGatewayConfig()
-	if xgw.StatsPort != 0 {
-		t.Errorf("Expected XOT Gateway stats-port 0, got %d", xgw.StatsPort)
+	if xgw.StatsPort != "" {
+		t.Errorf("Expected XOT Gateway stats-port empty, got %q", xgw.StatsPort)
 	}
 
 	xsr := cm.GetXotServerConfig()
-	if xsr.StatsPort != 12345 {
-		t.Errorf("Expected XOT Server stats-port 12345, got %d", xsr.StatsPort)
+	if xsr.StatsPort != ":12345" {
+		t.Errorf("Expected XOT Server stats-port ':12345', got %q", xsr.StatsPort)
 	}
 
 	srv, _ := cm.GetServer("12345", false)
