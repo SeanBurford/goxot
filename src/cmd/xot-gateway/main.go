@@ -66,7 +66,7 @@ func main() {
 
 		if sig == syscall.SIGHUP {
 			log.Printf("Graceful shutdown: waiting up to %d seconds...", *gracePeriod)
-			
+
 			// Wait for grace period or all connections to finish
 			done := make(chan struct{})
 			go func() {
@@ -88,18 +88,18 @@ func main() {
 		activeConns.Range(func(key, value interface{}) bool {
 			conn := key.(net.Conn)
 			stop := value.(chan struct{})
-			
+
 			// Signal the relay loop to stop
 			select {
 			case <-stop:
 			default:
 				close(stop)
 			}
-			
+
 			conn.Close()
 			return true
 		})
-		
+
 		os.Remove(sockPath)
 		os.Exit(0)
 	}()
@@ -226,7 +226,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 
 		for _, ip := range ips {
 			addr := srv.Port.DialAddr(ip)
-				c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+			c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
 				xot.SetNoDelay(c)
 				if srv.TCPKeepaliveInterval != nil && *srv.TCPKeepaliveInterval > 0 {
@@ -446,13 +446,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				}
 				xot.SendXot("unix", conn, clr.Serialize())
 			}
-			
+
 			// Ensure both goroutines exit by closing connections
 			remoteConn.Close()
 			conn.Close()
 			relayWg.Wait()
 		}()
-		
+
 		if shuttingDown.Load() {
 			return
 		}

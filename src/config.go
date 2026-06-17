@@ -21,13 +21,13 @@ const (
 )
 
 type XotServerConfig struct {
-	Prefix              string   `json:"prefix"`               // X.121 prefix (e.g., "123/3")
-	IP                  string   `json:"ip"`                   // XOT server IP
-	Port                AddrSpec `json:"port"`                 // Port or host:port (default PortDefault)
-	DNSPattern          string   `json:"dns_pattern"`          // Regex for DNS lookup
-	DNSName             string   `json:"dns_name"`             // DNS name template (e.g., "\2.\1.example.org")
-	TCPKeepaliveInterval *int    `json:"tcp-keepalive-interval"` // TCP keepalive idle seconds; nil→30, 0→disabled
-	X25KeepaliveInterval int     `json:"x25-keepalive-interval"` // X.25 INTERRUPT keepalive seconds; 0→disabled (default)
+	Prefix               string   `json:"prefix"`                 // X.121 prefix (e.g., "123/3")
+	IP                   string   `json:"ip"`                     // XOT server IP
+	Port                 AddrSpec `json:"port"`                   // Port or host:port (default PortDefault)
+	DNSPattern           string   `json:"dns_pattern"`            // Regex for DNS lookup
+	DNSName              string   `json:"dns_name"`               // DNS name template (e.g., "\2.\1.example.org")
+	TCPKeepaliveInterval *int     `json:"tcp-keepalive-interval"` // TCP keepalive idle seconds; nil→30, 0→disabled
+	X25KeepaliveInterval int      `json:"x25-keepalive-interval"` // X.25 INTERRUPT keepalive seconds; 0→disabled (default)
 }
 
 type TunConfig struct {

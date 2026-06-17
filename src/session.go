@@ -21,7 +21,7 @@ type Session struct {
 	State string
 	mu    sync.Mutex
 
-	GFI   byte // negotiated GFI
+	GFI byte // negotiated GFI
 
 	// Side A (e.g. TUN)
 	LciA  uint16
@@ -43,10 +43,10 @@ func (s *Session) SetState(newState string) {
 }
 
 type SessionManager struct {
-	mu           sync.RWMutex
-	sessions     map[string]*Session
-	byALCI       map[uint16]*Session
-	byBConnLCI   map[net.Conn]map[uint16]*Session
+	mu         sync.RWMutex
+	sessions   map[string]*Session
+	byALCI     map[uint16]*Session
+	byBConnLCI map[net.Conn]map[uint16]*Session
 
 	tunLciStart uint16
 	tunLciEnd   uint16
@@ -113,10 +113,10 @@ func (sm *SessionManager) AddSession(s *Session) error {
 	id := fmt.Sprintf("A:%p:%d-B:%p:%d", s.ConnA, s.LciA, s.ConnB, s.LciB)
 	s.ID = id
 	sm.sessions[id] = s
-	
+
 	// Index by A
 	sm.byALCI[s.LciA] = s
-	
+
 	// Index by B
 	if s.ConnB != nil {
 		if sm.byBConnLCI[s.ConnB] == nil {
@@ -228,7 +228,7 @@ func (sm *SessionManager) GetByBConnLCI(conn net.Conn, lci uint16) *Session {
 func (sm *SessionManager) GetSessionsForConn(conn net.Conn) []*Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	var res []*Session
 	if lcis, ok := sm.byBConnLCI[conn]; ok {
 		for _, s := range lcis {

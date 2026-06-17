@@ -92,9 +92,9 @@ func TestParseCallRequest(t *testing.T) {
 			expectedCalling: "112233445566778",
 		},
 		{
-			name:            "Both Max length 15-15",
-			addrLens:        0xFF, // Calling=15, Called=15
-			addrData:        []byte{
+			name:     "Both Max length 15-15",
+			addrLens: 0xFF, // Calling=15, Called=15
+			addrData: []byte{
 				0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x81,
 				0x12, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78,
 			},
@@ -421,13 +421,13 @@ func TestTypeNameAll(t *testing.T) {
 	// These types have unique lower nibbles that don't collide with S-frame detection,
 	// so TypeName() returns the expected string directly.
 	cases := map[byte]string{
-		PktTypeCallRequest:      "CALL_REQ",  // 0x0B
-		PktTypeCallConnected:    "CALL_CONN", // 0x0F
-		PktTypeClearRequest:     "CLR_REQ",   // 0x13
-		PktTypeClearConfirm:     "CLR_CONF",  // 0x17
-		PktTypeRR:               "RR",        // 0x01
-		PktTypeRNR:              "RNR",       // 0x05
-		PktTypeREJ:              "REJ",       // 0x09
+		PktTypeCallRequest:      "CALL_REQ",     // 0x0B
+		PktTypeCallConnected:    "CALL_CONN",    // 0x0F
+		PktTypeClearRequest:     "CLR_REQ",      // 0x13
+		PktTypeClearConfirm:     "CLR_CONF",     // 0x17
+		PktTypeRR:               "RR",           // 0x01
+		PktTypeRNR:              "RNR",          // 0x05
+		PktTypeREJ:              "REJ",          // 0x09
 		PktTypeResetRequest:     "RESET_REQ",    // 0x1B
 		PktTypeResetConfirm:     "RESET_CONF",   // 0x1F
 		PktTypeRestartRequest:   "RESTART_REQ",  // 0xFB
@@ -471,10 +471,10 @@ func TestGetBaseTypeSFrames(t *testing.T) {
 		typ      byte
 		expected byte
 	}{
-		{0x11, PktTypeRR},  // upper bits set, lower nibble 0x01 = RR
-		{0x21, PktTypeRR},  // different upper bits, lower nibble 0x01 = RR
-		{0x15, PktTypeRNR}, // lower nibble 0x05 = RNR
-		{0x19, PktTypeREJ}, // lower nibble 0x09 = REJ
+		{0x11, PktTypeRR},          // upper bits set, lower nibble 0x01 = RR
+		{0x21, PktTypeRR},          // different upper bits, lower nibble 0x01 = RR
+		{0x15, PktTypeRNR},         // lower nibble 0x05 = RNR
+		{0x19, PktTypeREJ},         // lower nibble 0x09 = REJ
 		{0x0B, PktTypeCallRequest}, // CALL_REQ, not an S-frame
 	}
 
@@ -745,7 +745,7 @@ func TestSerializeRoundTrip(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		for _, gfi := range []byte{ GFIMod8, GFIMod128, } {
+		for _, gfi := range []byte{GFIMod8, GFIMod128} {
 			t.Run(tc.name, func(t *testing.T) {
 				original := &X25Packet{
 					GFI:     gfi,

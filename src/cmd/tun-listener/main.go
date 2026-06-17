@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	AF_X25               = 9
-	SOCK_SEQPACKET       = 5
-	SIOCX25GFACILITIES   = 0x89E2
+	AF_X25             = 9
+	SOCK_SEQPACKET     = 5
+	SIOCX25GFACILITIES = 0x89E2
 )
 
 type x25_address struct {
@@ -106,14 +106,14 @@ func handleConn(fd int, sa sockaddr_x25) {
 
 	// Set read timeout for idle disconnection
 	idleTimeout := 5 * time.Second
-	
+
 	// Just read and discard for now
 	buf := make([]byte, 4096)
 	for {
-		// We use syscall.Setoptsockopt to set timeout if we were using net.Conn, 
+		// We use syscall.Setoptsockopt to set timeout if we were using net.Conn,
 		// but since we are using os.File, we can use SetReadDeadline if we wrap it back or just use a timer.
 		// Actually, since it's a raw FD, we should use syscall.Select or set SO_RCVTIMEO.
-		
+
 		tv := syscall.NsecToTimeval(idleTimeout.Nanoseconds())
 		syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 

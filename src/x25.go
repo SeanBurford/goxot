@@ -10,9 +10,9 @@ import (
 var ErrPacketTooLong = errors.New("X.25 packet too long")
 
 const (
-	GFIMod8 = byte(0x01)
-	GFIMod128 = byte(0x02)
-	LCIControl  = 0
+	GFIMod8    = byte(0x01)
+	GFIMod128  = byte(0x02)
+	LCIControl = 0
 )
 
 const (
@@ -115,7 +115,7 @@ func GetPacketTypeName(pktType byte) string {
 		return "DATA"
 	}
 	baseType := pktType
-	if (pktType & 0x0F) == 0x01 || (pktType & 0x0F) == 0x05 || (pktType & 0x0F) == 0x09 {
+	if (pktType&0x0F) == 0x01 || (pktType&0x0F) == 0x05 || (pktType&0x0F) == 0x09 {
 		baseType = pktType & 0x0F
 	}
 
@@ -166,7 +166,7 @@ func (p *X25Packet) GetBaseType() byte {
 	}
 	// For S-frames (RR, RNR, REJ), the type is in the lower 4 bits (excluding bit 0 which is 1)
 	// Actually, bits 3-1 define the type: 000 (RR), 010 (RNR), 100 (REJ)
-	if (p.Type & 0x0F) == 0x01 || (p.Type & 0x0F) == 0x05 || (p.Type & 0x0F) == 0x09 {
+	if (p.Type&0x0F) == 0x01 || (p.Type&0x0F) == 0x05 || (p.Type&0x0F) == 0x09 {
 		return p.Type & 0x0F
 	}
 	return p.Type
@@ -261,10 +261,10 @@ done:
 
 	// Rebuild payload
 	addrLens := byte((len(calling) << 4) | (len(called) & 0x0F))
-	
+
 	totalAddrBytes := (len(called) + len(calling) + 1) / 2
 	addrData := make([]byte, totalAddrBytes)
-	
+
 	// Encode addresses
 	encode := func(addr string, startNibble int) {
 		nibble := startNibble
@@ -277,7 +277,7 @@ done:
 			} else if r >= 'a' && r <= 'f' {
 				val = byte(r - 'a' + 10)
 			}
-			
+
 			byteIdx := nibble / 2
 			if byteIdx >= len(addrData) {
 				break
@@ -290,7 +290,7 @@ done:
 			nibble++
 		}
 	}
-	
+
 	encode(called, 0)
 	encode(calling, len(called))
 
@@ -326,8 +326,8 @@ func (p *X25Packet) TypeName() string {
 
 func (p *X25Packet) ValidateSize() error {
 	if len(p.Payload) > MaxUserData {
-    return fmt.Errorf("%w: user data too large: %d > %d", ErrPacketTooLong, len(p.Payload), MaxUserData)
-  } else if p.Type == PktTypeCallRequest {
+		return fmt.Errorf("%w: user data too large: %d > %d", ErrPacketTooLong, len(p.Payload), MaxUserData)
+	} else if p.Type == PktTypeCallRequest {
 		if len(p.Serialize()) > MaxCallRequestSize {
 			return fmt.Errorf("%w: call request too large: %d > %d", ErrPacketTooLong, len(p.Serialize()), MaxCallRequestSize)
 		}
@@ -367,7 +367,7 @@ func (p *X25Packet) ParseCallRequest() (called, calling string, facilities []byt
 	}
 
 	addrData := p.Payload[offset : offset+totalAddrBytes]
-	
+
 	// Decode BCD addresses
 	decode := func(data []byte, length int, startNibble int) string {
 		res := ""
@@ -432,7 +432,7 @@ func (p *X25Packet) ParseCallConnected() (called, calling string, facilities []b
 	}
 
 	addrData := p.Payload[offset : offset+totalAddrBytes]
-	
+
 	// Decode BCD addresses
 	decode := func(data []byte, length int, startNibble int) string {
 		res := ""
@@ -505,7 +505,7 @@ func FormatFacilities(fac []byte) string {
 			break
 		}
 		val := fac[i+1 : i+1+valLen]
-		
+
 		// Common facilities
 		switch code {
 		case 0x42: // Packet size

@@ -209,15 +209,15 @@ func main() {
 		}
 		log.Printf("tun-loopback: %s → address %s (LCI range %d-%d)", name, addr, lciStart, lciEnd)
 		nodes = append(nodes, &tunNode{
-			ifce:     ifce,
-			name:     name,
-			address:  addr,
-			idx:      i,
+			ifce:      ifce,
+			name:      name,
+			address:   addr,
+			idx:       i,
 			linkState: linkDown,
-			wbuf:     make([]byte, tun.MaxPacketSize),
-			nextLCI:  lciStart,
-			lciStart: lciStart,
-			lciEnd:   lciEnd,
+			wbuf:      make([]byte, tun.MaxPacketSize),
+			nextLCI:   lciStart,
+			lciStart:  lciStart,
+			lciEnd:    lciEnd,
 		})
 	}
 

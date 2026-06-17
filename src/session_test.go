@@ -315,4 +315,3 @@ func TestSessionStateConstants(t *testing.T) {
 		}
 	}
 }
-

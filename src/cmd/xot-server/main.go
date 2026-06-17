@@ -75,7 +75,7 @@ func main() {
 
 		if sig == syscall.SIGHUP {
 			log.Printf("Graceful shutdown: waiting up to %d seconds...", *gracePeriod)
-			
+
 			// Wait for grace period or all connections to finish
 			done := make(chan struct{})
 			go func() {
@@ -97,22 +97,22 @@ func main() {
 		activeConns.Range(func(key, value interface{}) bool {
 			conn := key.(net.Conn)
 			stop := value.(chan struct{})
-			
+
 			// Signal the relay loop to stop
 			select {
 			case <-stop:
 			default:
 				close(stop)
 			}
-			
-			// We don't know the LCI here easily without more tracking, 
+
+			// We don't know the LCI here easily without more tracking,
 			// but we can at least close the connection.
 			// Actually, we should try to send a Clear Request if we can.
 			// For now, just close the connection as handleIncomingXot will handle it.
 			conn.Close()
 			return true
 		})
-		
+
 		os.Exit(0)
 	}()
 
@@ -244,7 +244,7 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				log.Printf("%s: Failed to set TCP keepalive: %v", source, kaErr)
 			}
 		}
-		
+
 		// Inner function to handle the relay so we can defer destConn.Close() properly
 		func() {
 			xot.InterfaceSessionsOpened.Add(destIf, 1)
@@ -398,13 +398,13 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				}
 				sendToSource(clr.Serialize())
 			}
-			
+
 			// Ensure both goroutines exit by closing connections
 			destConn.Close()
 			conn.Close()
 			relayWg.Wait()
 		}()
-		
+
 		if shuttingDown.Load() {
 			return
 		}

@@ -2,11 +2,11 @@ package xot
 
 import (
 	"bytes"
+	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
-	"io"
-	"strings"
 )
 
 type mockAddr struct {
@@ -90,11 +90,11 @@ func TestReadXotOversized(t *testing.T) {
 	m := &mockConn{
 		readBuf: bytes.NewBuffer(nil),
 	}
-	
+
 	// Header says 5000 bytes, which is > MaxX25PacketSize
 	header := []byte{0x00, 0x00, 0x13, 0x88} // 0x1388 = 5000
 	m.readBuf.Write(header)
-	
+
 	_, err := ReadXot("test", m)
 	if err == nil {
 		t.Errorf("Expected error for oversized packet")
@@ -149,7 +149,7 @@ func TestSendXotThenReadLarge(t *testing.T) {
 	defer server.Close()
 
 	// Build a 4095-byte payload (close to the limit)
-	payload := make([]byte, MaxUserData - 1)
+	payload := make([]byte, MaxUserData-1)
 	for i := range payload {
 		payload[i] = byte(i)
 	}
@@ -176,11 +176,11 @@ type nonSyscallConn struct {
 	net.Conn
 }
 
-func (n *nonSyscallConn) Read(b []byte) (int, error)  { return 0, io.EOF }
-func (n *nonSyscallConn) Write(b []byte) (int, error) { return 0, io.EOF }
-func (n *nonSyscallConn) Close() error                { return nil }
-func (n *nonSyscallConn) LocalAddr() net.Addr         { return &mockAddr{net: "tcp"} }
-func (n *nonSyscallConn) RemoteAddr() net.Addr        { return &mockAddr{net: "tcp"} }
+func (n *nonSyscallConn) Read(b []byte) (int, error)         { return 0, io.EOF }
+func (n *nonSyscallConn) Write(b []byte) (int, error)        { return 0, io.EOF }
+func (n *nonSyscallConn) Close() error                       { return nil }
+func (n *nonSyscallConn) LocalAddr() net.Addr                { return &mockAddr{net: "tcp"} }
+func (n *nonSyscallConn) RemoteAddr() net.Addr               { return &mockAddr{net: "tcp"} }
 func (n *nonSyscallConn) SetDeadline(t time.Time) error      { return nil }
 func (n *nonSyscallConn) SetReadDeadline(t time.Time) error  { return nil }
 func (n *nonSyscallConn) SetWriteDeadline(t time.Time) error { return nil }
