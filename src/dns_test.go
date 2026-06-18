@@ -10,7 +10,7 @@ func TestResolveXotDestination(t *testing.T) {
 	// but we can at least test the pattern substitution logic if we had a way to mock net.LookupHost.
 	// For now, let's just test that it correctly identifies IP vs DNS.
 
-	ips, err := ResolveXotDestination("123456", &XotServerConfig{IP: "1.2.3.4"})
+	ips, err := ResolveXotDestination("123456", &ServerConfig{IP: "1.2.3.4"})
 	if err != nil {
 		t.Errorf("ResolveXotDestination failed for IP: %v", err)
 	}
@@ -22,7 +22,7 @@ func TestResolveXotDestination(t *testing.T) {
 }
 
 func TestResolveXotDestinationInvalidPattern(t *testing.T) {
-	srv := &XotServerConfig{DNSPattern: "[invalid", DNSName: "x.example.com"}
+	srv := &ServerConfig{DNSPattern: "[invalid", DNSName: "x.example.com"}
 	_, err := ResolveXotDestination("12345", srv)
 	if err == nil {
 		t.Fatal("Expected error for invalid dns_pattern")
@@ -33,7 +33,7 @@ func TestResolveXotDestinationInvalidPattern(t *testing.T) {
 }
 
 func TestResolveXotDestinationNoMatch(t *testing.T) {
-	srv := &XotServerConfig{
+	srv := &ServerConfig{
 		DNSPattern: `^(\d{3})(\d+)`,
 		DNSName:    `\2.\1.local`,
 	}
@@ -48,7 +48,7 @@ func TestResolveXotDestinationNoMatch(t *testing.T) {
 
 func TestResolveXotDestinationSubstitution(t *testing.T) {
 	// net.LookupHost("127.0.0.1") returns ["127.0.0.1"] without DNS
-	srv := &XotServerConfig{
+	srv := &ServerConfig{
 		DNSPattern: `^(.*)`,
 		DNSName:    `127.0.0.1`,
 	}

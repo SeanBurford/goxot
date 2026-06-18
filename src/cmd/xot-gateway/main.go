@@ -139,13 +139,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				log.Printf("%s: %v", source, err)
 				xot.CausesGenerated.Add("packet_too_long", 1)
 				pkt, _ := xot.ParseX25(data)
-				gfi_err := xot.GFIMod8
-				lci_err := uint16(0)
+				gfiErr := xot.GFIMod8
+				lciErr := uint16(0)
 				if pkt != nil {
-					gfi_err = pkt.GFI
-					lci_err = pkt.LCI
+					gfiErr = pkt.GFI
+					lciErr = pkt.LCI
 				}
-				clr := xot.CreateClearRequest(gfi_err, lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+				clr := xot.CreateClearRequest(gfiErr, lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 				xot.SendXot("unix", conn, clr.Serialize())
 			} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 				log.Printf("%s: Error reading XOT: %v", source, err)
@@ -293,9 +293,9 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from remote", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
-							gfi_err := xot.GetGFI(d)
-							lci_err := xot.GetLCI(d)
-							clr := xot.CreateClearRequest(gfi_err, lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							gfiErr := xot.GetGFI(d)
+							lciErr := xot.GetLCI(d)
+							clr := xot.CreateClearRequest(gfiErr, lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot("unix", conn, clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from remote: %v", source, err)
@@ -353,9 +353,9 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if errors.Is(err, xot.ErrPacketTooLong) {
 							log.Printf("%s: %v from local", source, err)
 							xot.CausesGenerated.Add("packet_too_long", 1)
-							gfi_err := xot.GetGFI(d)
-							lci_err := xot.GetLCI(d)
-							clr := xot.CreateClearRequest(gfi_err, lci_err, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
+							gfiErr := xot.GetGFI(d)
+							lciErr := xot.GetLCI(d)
+							clr := xot.CreateClearRequest(gfiErr, lciErr, xot.CauseLocalProcedureError, xot.DiagPacketTooLong)
 							xot.SendXot("unix", conn, clr.Serialize())
 						} else if err != io.EOF && !errors.Is(err, net.ErrClosed) {
 							log.Printf("%s: Error reading from local: %v", source, err)

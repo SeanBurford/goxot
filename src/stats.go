@@ -8,17 +8,25 @@ import (
 )
 
 var (
+	// StartTime records when the process started.
 	StartTime = time.Now()
 
+	// ThreadsActive tracks the number of active goroutines by name.
 	ThreadsActive = expvar.NewMap("threads_active")
 
-	DnsRequests = expvar.NewInt("dns_requests")
+	// DNSRequests counts the total number of DNS lookups performed.
+	DNSRequests = expvar.NewInt("dns_requests")
 
-	PacketsHandled  = expvar.NewMap("packets_handled")
-	CausesReceived  = expvar.NewMap("causes_received")
+	// PacketsHandled counts packets processed, keyed by packet type name.
+	PacketsHandled = expvar.NewMap("packets_handled")
+	// CausesReceived counts X.25 clear causes received, keyed by cause code.
+	CausesReceived = expvar.NewMap("causes_received")
+	// CausesGenerated counts X.25 clear causes generated locally, keyed by reason.
 	CausesGenerated = expvar.NewMap("causes_generated")
+)
 
-	// Interface-specific stats
+// InterfaceSessionsOpened and related vars track per-interface session and packet statistics.
+var (
 	InterfaceSessionsOpened  = expvar.NewMap("interface_sessions_opened")
 	InterfaceSessionsClosed  = expvar.NewMap("interface_sessions_closed")
 	InterfaceCallRequest     = expvar.NewMap("interface_call_request")
@@ -43,6 +51,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// StartStatsServer starts an HTTP server exposing expvar metrics at /debug/vars and /varz.
 func StartStatsServer(addr string) {
 	if addr == "" {
 		return

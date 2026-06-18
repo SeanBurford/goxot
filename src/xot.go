@@ -37,10 +37,12 @@ func PutBuffer(buf []byte) {
 	bufferPool.Put(buf[:MaxXOTPacketSize])
 }
 
+// XotVersion is the RFC 1613 XOT header version field value.
 const (
 	XotVersion = 0
 )
 
+// SetNoDelay disables Nagle's algorithm on TCP connections to reduce latency.
 func SetNoDelay(conn net.Conn) error {
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		return tcp.SetNoDelay(true)
@@ -217,6 +219,7 @@ func ReadXot(ifname string, conn net.Conn) ([]byte, error) {
 	return res, nil
 }
 
+// GetFd returns the underlying file descriptor for conn, or 0 if unavailable.
 func GetFd(conn net.Conn) int {
 	if sc, ok := conn.(syscall.Conn); ok {
 		raw, err := sc.SyscallConn()

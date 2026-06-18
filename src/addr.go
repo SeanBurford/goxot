@@ -13,6 +13,7 @@ import (
 // "[host%zone]:port"). Zero or absent normalises to the empty string.
 type AddrSpec string
 
+// UnmarshalJSON implements json.Unmarshaler for AddrSpec.
 func (a *AddrSpec) UnmarshalJSON(data []byte) error {
 	var n int
 	if err := json.Unmarshal(data, &n); err == nil {

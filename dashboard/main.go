@@ -45,6 +45,7 @@ var (
 	config     xot.Config
 )
 
+// CacheDuration is how long varz responses are cached before re-fetching.
 const CacheDuration = 990 * time.Millisecond
 
 func main() {

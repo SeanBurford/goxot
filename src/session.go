@@ -34,6 +34,7 @@ type Session struct {
 	CreatedAt int64
 }
 
+// SetState updates the session's X.25 call state.
 func (s *Session) SetState(newState string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,6 +43,7 @@ func (s *Session) SetState(newState string) {
 	}
 }
 
+// SessionManager tracks active X.25 virtual circuits indexed by LCI and connection.
 type SessionManager struct {
 	mu         sync.RWMutex
 	sessions   map[string]*Session
@@ -53,6 +55,7 @@ type SessionManager struct {
 	nextLCI     uint16 // round-robin cursor; never reuse the most-recently freed LCI immediately
 }
 
+// NewSessionManager creates a SessionManager using the given LCI range.
 func NewSessionManager(lciStart, lciEnd uint16) *SessionManager {
 	// Defence-in-depth: clamp to the valid X.25 LCI range even if the caller
 	// passes unchecked config values.  Primary clamping happens in config.Reload.
@@ -89,6 +92,7 @@ func (sm *SessionManager) AllocateTunLCI() (uint16, error) {
 	return 0, fmt.Errorf("LCI exhaustion in range %d-%d", sm.tunLciStart, sm.tunLciEnd)
 }
 
+// AddSession registers a session and indexes it by LCI A and (ConnB, LCI B).
 func (sm *SessionManager) AddSession(s *Session) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -169,6 +173,7 @@ func (sm *SessionManager) AllocateAndAddTunSession(incomingConn net.Conn, incomi
 	return nil, fmt.Errorf("LCI exhaustion in range %d-%d", sm.tunLciStart, sm.tunLciEnd)
 }
 
+// RemoveByBConnLCI removes the session identified by the B-side connection and LCI.
 func (sm *SessionManager) RemoveByBConnLCI(conn net.Conn, lci uint16) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -190,6 +195,7 @@ func (sm *SessionManager) RemoveByBConnLCI(conn net.Conn, lci uint16) {
 	}
 }
 
+// RemoveSession removes a session from all indexes.
 func (sm *SessionManager) RemoveSession(s *Session) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -210,12 +216,14 @@ func (sm *SessionManager) RemoveSession(s *Session) {
 	}
 }
 
+// GetByALCI returns the session with the given A-side LCI, or nil.
 func (sm *SessionManager) GetByALCI(lci uint16) *Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.byALCI[lci]
 }
 
+// GetByBConnLCI returns the session for the given B-side connection and LCI, or nil.
 func (sm *SessionManager) GetByBConnLCI(conn net.Conn, lci uint16) *Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -225,6 +233,7 @@ func (sm *SessionManager) GetByBConnLCI(conn net.Conn, lci uint16) *Session {
 	return sm.byBConnLCI[conn][lci]
 }
 
+// GetSessionsForConn returns all sessions associated with a B-side connection.
 func (sm *SessionManager) GetSessionsForConn(conn net.Conn) []*Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -238,6 +247,7 @@ func (sm *SessionManager) GetSessionsForConn(conn net.Conn) []*Session {
 	return res
 }
 
+// GetAllSessions returns all active sessions.
 func (sm *SessionManager) GetAllSessions() []*Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -249,6 +259,7 @@ func (sm *SessionManager) GetAllSessions() []*Session {
 	return res
 }
 
+// RemoveAllSessions removes and returns all active sessions.
 func (sm *SessionManager) RemoveAllSessions() []*Session {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

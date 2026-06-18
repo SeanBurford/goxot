@@ -25,12 +25,14 @@ var (
 	statsPort  = flag.String("stats-port", "", "Address for /varz stats (port or host:port; empty to disable)")
 )
 
+// LinkStateDown and related constants represent the TUN interface link state.
 const (
 	LinkStateDown        = int32(0)
 	LinkStateConnecting  = int32(1)
 	LinkStateOperational = int32(3)
 )
 
+// TunGateway manages the TUN interface and its XOT relay connections.
 type TunGateway struct {
 	ifce *tun.Interface
 	cm   *xot.ConfigManager
@@ -543,6 +545,7 @@ func (tg *TunGateway) handleGatewayRead(conn net.Conn) {
 	}
 }
 
+// SyncRoutes updates kernel routes to match the configured server prefixes.
 func (tg *TunGateway) SyncRoutes() {
 	tg.routeMu.Lock()
 	defer tg.routeMu.Unlock()

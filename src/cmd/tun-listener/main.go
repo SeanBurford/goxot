@@ -14,30 +14,30 @@ import (
 )
 
 const (
-	AF_X25             = 9
-	SOCK_SEQPACKET     = 5
-	SIOCX25GFACILITIES = 0x89E2
+	afX25              = 9
+	sockSeqpacket      = 5
+	siocX25GFacilities = 0x89E2
 )
 
-type x25_address struct {
+type x25Address struct {
 	X25Addr [16]byte
 }
 
-type sockaddr_x25 struct {
+type sockaddrX25 struct {
 	Family  uint16
-	Address x25_address
+	Address x25Address
 }
 
-type x25_facilities struct {
-	Winsize_in  uint32
-	Winsize_out uint32
-	Psize_in    uint32
-	Psize_out   uint32
-	Throughput  uint32
-	Reverse     uint32
+type x25Facilities struct {
+	WinsizeIn  uint32
+	WinsizeOut uint32
+	PsizeIn    uint32
+	PsizeOut   uint32
+	Throughput uint32
+	Reverse    uint32
 }
 
-type x25_calluserdata struct {
+type x25Calluserdata struct {
 	CudLen  uint32
 	CudData [128]byte
 }
@@ -53,14 +53,14 @@ func main() {
 		log.Fatal("--address is required")
 	}
 
-	fd, err := syscall.Socket(AF_X25, SOCK_SEQPACKET, 0)
+	fd, err := syscall.Socket(afX25, sockSeqpacket, 0)
 	if err != nil {
 		log.Fatalf("Failed to create AF_X25 socket: %v", err)
 	}
 	defer syscall.Close(fd)
 
-	var sa sockaddr_x25
-	sa.Family = AF_X25
+	var sa sockaddrX25
+	sa.Family = afX25
 	copy(sa.Address.X25Addr[:], *address)
 
 	// Bind
@@ -77,7 +77,7 @@ func main() {
 	log.Printf("tun-listener listening on X.25 address %s", *address)
 
 	for {
-		var rsa sockaddr_x25
+		var rsa sockaddrX25
 		rsaLen := uint32(unsafe.Sizeof(rsa))
 		nfd, _, errno := syscall.Syscall(syscall.SYS_ACCEPT, uintptr(fd), uintptr(unsafe.Pointer(&rsa)), uintptr(unsafe.Pointer(&rsaLen)))
 		if errno != 0 {
@@ -89,7 +89,7 @@ func main() {
 	}
 }
 
-func handleConn(fd int, sa sockaddr_x25) {
+func handleConn(fd int, sa sockaddrX25) {
 	f := os.NewFile(uintptr(fd), "")
 	defer f.Close()
 
@@ -98,10 +98,10 @@ func handleConn(fd int, sa sockaddr_x25) {
 	fmt.Fprintf(f, "Welcome to tun-listener. Your address: %s\r\n", remoteAddr)
 
 	// Query facilities
-	var fac x25_facilities
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCX25GFACILITIES, uintptr(unsafe.Pointer(&fac)))
+	var fac x25Facilities
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocX25GFacilities, uintptr(unsafe.Pointer(&fac)))
 	if errno == 0 {
-		fmt.Fprintf(f, "Facilities: %s\r\n", xot.FormatX25FacilitiesRaw(fac.Winsize_in, fac.Winsize_out, fac.Psize_in, fac.Psize_out))
+		fmt.Fprintf(f, "Facilities: %s\r\n", xot.FormatX25FacilitiesRaw(fac.WinsizeIn, fac.WinsizeOut, fac.PsizeIn, fac.PsizeOut))
 	}
 
 	// Set read timeout for idle disconnection

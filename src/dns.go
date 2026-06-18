@@ -20,7 +20,8 @@ var (
 	dnsCacheMu sync.Mutex
 )
 
-func ResolveXotDestination(addr string, srv *XotServerConfig) ([]string, error) {
+// ResolveXotDestination returns the IP addresses for an X.121 address using the server config.
+func ResolveXotDestination(addr string, srv *ServerConfig) ([]string, error) {
 	if srv.IP != "" {
 		return []string{srv.IP}, nil
 	}
@@ -51,7 +52,7 @@ func ResolveXotDestination(addr string, srv *XotServerConfig) ([]string, error) 
 	dnsCacheMu.Unlock()
 
 	log.Printf("DNS: Resolving %s (for X.121 %s)", dnsName, addr)
-	DnsRequests.Add(1)
+	DNSRequests.Add(1)
 	ips, err := net.LookupHost(dnsName)
 	if err != nil {
 		return nil, fmt.Errorf("DNS lookup failed for %s: %v", dnsName, err)

@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// LciStartDefault is the default starting LCI for the TUN interface LCI range.
 const (
 	LciStartDefault     = 1024
 	LciEndDefault       = 2048
@@ -20,7 +21,8 @@ const (
 	TCPKeepaliveDefault = 30 // seconds; applied when "tcp-keepalive-interval" is absent from config
 )
 
-type XotServerConfig struct {
+// ServerConfig configures an XOT server destination with prefix, addressing, and keepalive settings.
+type ServerConfig struct {
 	Prefix               string   `json:"prefix"`                 // X.121 prefix (e.g., "123/3")
 	IP                   string   `json:"ip"`                     // XOT server IP
 	Port                 AddrSpec `json:"port"`                   // Port or host:port (default PortDefault)
@@ -30,40 +32,47 @@ type XotServerConfig struct {
 	X25KeepaliveInterval int      `json:"x25-keepalive-interval"` // X.25 INTERRUPT keepalive seconds; 0→disabled (default)
 }
 
+// TunConfig holds LCI range and modulus settings for a TUN interface.
 type TunConfig struct {
 	LciStart int `json:"lci_start"` // Start of TUN LCI range
 	LciEnd   int `json:"lci_end"`   // End of TUN LCI range
 	Modulo   int `json:"modulo"`    // Window modulus: 8 (default) or 128
 }
 
+// ServiceConfig holds common service settings such as the stats port.
 type ServiceConfig struct {
 	StatsPort AddrSpec `json:"stats-port"`
 }
 
+// TunGatewayConfig holds configuration for the tun-gateway process.
 type TunGatewayConfig struct {
 	TunConfig
 	ServiceConfig
 }
 
+// TunLoopbackConfig holds configuration for the tun-loopback process.
 type TunLoopbackConfig struct {
 	TunConfig
 	ServiceConfig
 	Routes []string `json:"routes"` // X.121 addresses; each gets its own TUN interface
 }
 
+// DestinationConfig holds per-destination X.25 facility overrides.
 type DestinationConfig struct {
 	Facilities map[string]string `json:"facilities"`
 }
 
+// Config is the top-level configuration structure loaded from the JSON config file.
 type Config struct {
 	TunGateway   TunGatewayConfig             `json:"tun-gateway"`
 	TunLoopback  TunLoopbackConfig            `json:"tun-loopback"`
 	XotGateway   ServiceConfig                `json:"xot-gateway"`
 	XotServer    ServiceConfig                `json:"xot-server"`
-	Servers      []XotServerConfig            `json:"servers"`
+	Servers      []ServerConfig               `json:"servers"`
 	Destinations map[string]DestinationConfig `json:"destinations"`
 }
 
+// ConfigManager loads and hot-reloads the JSON configuration file.
 type ConfigManager struct {
 	mu       sync.RWMutex
 	filename string
@@ -71,12 +80,14 @@ type ConfigManager struct {
 	lastMod  time.Time
 }
 
+// NewConfigManager creates a ConfigManager and performs an initial load of filename.
 func NewConfigManager(filename string) (*ConfigManager, error) {
 	cm := &ConfigManager{filename: filename}
 	_, err := cm.Reload()
 	return cm, err
 }
 
+// Reload re-reads the config file if it has changed. Returns true if reloaded.
 func (cm *ConfigManager) Reload() (bool, error) {
 	if cm == nil {
 		return false, nil
@@ -162,7 +173,7 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	}
 
 	// Set defaults and validate servers
-	validServers := make([]XotServerConfig, 0, len(cfg.Servers))
+	validServers := make([]ServerConfig, 0, len(cfg.Servers))
 	for i := range cfg.Servers {
 		srv := cfg.Servers[i]
 		if srv.Port == "" {
@@ -212,6 +223,7 @@ func (cm *ConfigManager) Reload() (bool, error) {
 	return true, nil
 }
 
+// GetTunGatewayConfig returns the current TunGatewayConfig.
 func (cm *ConfigManager) GetTunGatewayConfig() TunGatewayConfig {
 	if cm == nil {
 		return TunGatewayConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault, Modulo: 8}}
@@ -224,6 +236,7 @@ func (cm *ConfigManager) GetTunGatewayConfig() TunGatewayConfig {
 	return cm.config.TunGateway
 }
 
+// GetTunLoopbackConfig returns the current TunLoopbackConfig.
 func (cm *ConfigManager) GetTunLoopbackConfig() TunLoopbackConfig {
 	if cm == nil {
 		return TunLoopbackConfig{TunConfig: TunConfig{LciStart: LciStartDefault, LciEnd: LciEndDefault}}
@@ -236,6 +249,7 @@ func (cm *ConfigManager) GetTunLoopbackConfig() TunLoopbackConfig {
 	return cm.config.TunLoopback
 }
 
+// GetXotGatewayConfig returns the ServiceConfig for the xot-gateway.
 func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
 	if cm == nil {
 		return ServiceConfig{}
@@ -248,6 +262,7 @@ func (cm *ConfigManager) GetXotGatewayConfig() ServiceConfig {
 	return cm.config.XotGateway
 }
 
+// GetXotServerConfig returns the ServiceConfig for the xot-server.
 func (cm *ConfigManager) GetXotServerConfig() ServiceConfig {
 	if cm == nil {
 		return ServiceConfig{}
@@ -260,7 +275,8 @@ func (cm *ConfigManager) GetXotServerConfig() ServiceConfig {
 	return cm.config.XotServer
 }
 
-func (cm *ConfigManager) GetServers() []XotServerConfig {
+// GetServers returns a copy of the current server list.
+func (cm *ConfigManager) GetServers() []ServerConfig {
 	if cm == nil {
 		return nil
 	}
@@ -269,11 +285,12 @@ func (cm *ConfigManager) GetServers() []XotServerConfig {
 	if cm.config == nil {
 		return nil
 	}
-	servers := make([]XotServerConfig, len(cm.config.Servers))
+	servers := make([]ServerConfig, len(cm.config.Servers))
 	copy(servers, cm.config.Servers)
 	return servers
 }
 
+// GetDestinations returns a copy of the current destination map.
 func (cm *ConfigManager) GetDestinations() map[string]DestinationConfig {
 	if cm == nil {
 		return nil
@@ -290,6 +307,7 @@ func (cm *ConfigManager) GetDestinations() map[string]DestinationConfig {
 	return destinations
 }
 
+// GetDestination returns the DestinationConfig for addr, or nil if not configured.
 func (cm *ConfigManager) GetDestination(addr string) *DestinationConfig {
 	if cm == nil {
 		return nil
@@ -340,7 +358,7 @@ func isLocalIP(ip string) bool {
 // local flag.  If the server's IP (or any IP resolved from its DNS name) is
 // assigned to a local interface the flag is true; if resolution fails or no
 // server is found the flag defaults to defaultLocal.
-func (cm *ConfigManager) GetServer(x121Addr string, defaultLocal bool) (*XotServerConfig, bool) {
+func (cm *ConfigManager) GetServer(x121Addr string, defaultLocal bool) (*ServerConfig, bool) {
 	if cm == nil {
 		return nil, defaultLocal
 	}
@@ -354,7 +372,7 @@ func (cm *ConfigManager) GetServer(x121Addr string, defaultLocal bool) (*XotServ
 		cm.mu.RUnlock()
 		return nil, defaultLocal
 	}
-	var best *XotServerConfig
+	var best *ServerConfig
 	bestLen := -1
 	for _, srv := range cm.config.Servers {
 		parts := strings.Split(srv.Prefix, "/")

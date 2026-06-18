@@ -7,14 +7,17 @@ import (
 	"log"
 )
 
+// ErrPacketTooLong is returned when an X.25 or XOT packet exceeds the maximum allowed size.
 var ErrPacketTooLong = errors.New("X.25 packet too long")
 
+// GFIMod8 and GFIMod128 are the GFI values for modulo-8 and modulo-128 sequencing.
 const (
 	GFIMod8    = byte(0x01)
 	GFIMod128  = byte(0x02)
 	LCIControl = 0
 )
 
+// MaxUserData is the maximum X.25 user data payload size in bytes.
 const (
 	MaxUserData        = 4096
 	X25HeaderSize      = 11
@@ -24,13 +27,14 @@ const (
 	MaxCallRequestSize = 260
 )
 
+// LCIMin is the minimum usable LCI (LCI 0 is reserved for link-level packets).
+// LCIMax is the maximum LCI value (12-bit field, so 4095).
 const (
-	// LCI 0 is reserved for link-level packets (RESTART, DIAGNOSTIC).
-	// LCI field is 12 bits, so the maximum value is 4095.
 	LCIMin = 1
 	LCIMax = 4095
 )
 
+// CauseDTEOriginated and related constants are X.25 clear cause codes.
 const (
 	CauseDTEOriginated       = 0x00
 	CauseNumberBusy          = 0x01
@@ -41,10 +45,12 @@ const (
 	CauseLocalProcedureError = 0x42
 )
 
+// DiagPacketTooLong is the X.25 diagnostic code for an oversized packet.
 const (
 	DiagPacketTooLong = 39
 )
 
+// PktTypeCallRequest and related constants are X.25 packet type identifiers.
 const (
 	PktTypeCallRequest      = 0x0B
 	PktTypeCallConnected    = 0x0F
@@ -65,6 +71,7 @@ const (
 	PktTypeRegistrationConf = 0xF7
 )
 
+// X25Packet represents a decoded X.25 packet with header fields and payload.
 type X25Packet struct {
 	GFI     byte
 	LCI     uint16
@@ -72,6 +79,7 @@ type X25Packet struct {
 	Payload []byte
 }
 
+// ParseX25 decodes a raw byte slice into an X25Packet.
 func ParseX25(data []byte) (*X25Packet, error) {
 	if len(data) < 3 {
 		return nil, fmt.Errorf("X.25 packet too short: %d bytes", len(data))
@@ -89,6 +97,7 @@ func ParseX25(data []byte) (*X25Packet, error) {
 	}, nil
 }
 
+// GetGFI extracts the General Format Identifier from the first byte of an X.25 packet.
 func GetGFI(data []byte) byte {
 	if len(data) < 1 {
 		return 0
@@ -96,6 +105,7 @@ func GetGFI(data []byte) byte {
 	return (data[0] >> 4) & 0x0F
 }
 
+// GetLCI extracts the 12-bit Logical Channel Identifier from an X.25 packet header.
 func GetLCI(data []byte) uint16 {
 	if len(data) < 2 {
 		return 0
@@ -103,6 +113,7 @@ func GetLCI(data []byte) uint16 {
 	return (uint16(data[0]&0x0F) << 8) | uint16(data[1])
 }
 
+// GetPacketType returns the packet type byte from byte 2 of an X.25 packet.
 func GetPacketType(data []byte) byte {
 	if len(data) < 3 {
 		return 0
@@ -110,6 +121,7 @@ func GetPacketType(data []byte) byte {
 	return data[2]
 }
 
+// GetPacketTypeName returns a human-readable name for an X.25 packet type byte.
 func GetPacketTypeName(pktType byte) string {
 	if (pktType & 0x01) == 0 {
 		return "DATA"
@@ -156,10 +168,12 @@ func GetPacketTypeName(pktType byte) string {
 	return fmt.Sprintf("UNKNOWN(0x%02X)", pktType)
 }
 
+// IsData reports whether the packet is a data (I-frame) packet.
 func (p *X25Packet) IsData() bool {
 	return (p.Type & 0x01) == 0
 }
 
+// GetBaseType returns the canonical packet type, masking S-frame sequence bits.
 func (p *X25Packet) GetBaseType() byte {
 	if p.IsData() {
 		return PktTypeData
@@ -308,6 +322,7 @@ done:
 	return nil
 }
 
+// Serialize encodes the packet back into its wire format.
 func (p *X25Packet) Serialize() []byte {
 	data := make([]byte, 3+len(p.Payload))
 	data[0] = (p.GFI << 4) | byte((p.LCI>>8)&0x0F)
@@ -317,6 +332,7 @@ func (p *X25Packet) Serialize() []byte {
 	return data
 }
 
+// TypeName returns a human-readable name for this packet's type.
 func (p *X25Packet) TypeName() string {
 	if p.IsData() {
 		return "DATA"
@@ -324,6 +340,7 @@ func (p *X25Packet) TypeName() string {
 	return GetPacketTypeName(p.GetBaseType())
 }
 
+// ValidateSize returns an error if the packet exceeds X.25 size limits.
 func (p *X25Packet) ValidateSize() error {
 	if len(p.Payload) > MaxUserData {
 		return fmt.Errorf("%w: user data too large: %d > %d", ErrPacketTooLong, len(p.Payload), MaxUserData)
@@ -339,10 +356,12 @@ func (p *X25Packet) ValidateSize() error {
 	return nil
 }
 
+// LogTrace logs an X25Packet in human-readable hex trace format.
 func LogTrace(source, dest string, pkt *X25Packet) {
 	log.Printf("%s>%s %s % X", source, dest, pkt.TypeName(), pkt.Serialize())
 }
 
+// LogTraceRaw logs a raw packet byte slice in hex trace format.
 func LogTraceRaw(source, dest string, data []byte) {
 	log.Printf("%s>%s %s % X", source, dest, GetPacketTypeName(GetPacketType(data)), data)
 }
@@ -477,6 +496,7 @@ func (p *X25Packet) ParseCallConnected() (called, calling string, facilities []b
 	return called, calling, facilities, userData, nil
 }
 
+// FormatFacilities formats an X.25 facilities field as a human-readable string.
 func FormatFacilities(fac []byte) string {
 	if len(fac) == 0 {
 		return "none"
@@ -568,6 +588,7 @@ func NegotiateGFI(callerGFI byte) byte {
 	return GFIMod128
 }
 
+// CreateClearRequest builds an X.25 Clear Request packet with the given cause and diagnostic.
 func CreateClearRequest(gfi byte, lci uint16, cause byte, diag byte) *X25Packet {
 	return &X25Packet{
 		GFI:     gfi,
