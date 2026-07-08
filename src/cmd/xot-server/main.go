@@ -269,6 +269,10 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			}
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
+			go func() {
+				relayWg.Wait()
+				closeRelay()
+			}()
 
 			// RACE-D: protect concurrent writes to conn (TCP stream).
 			// relay_dest_to_source and the shutdown path both write to conn;
@@ -324,9 +328,10 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
 							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
-						// Forward the clear packet before exiting
 						sendToSource(d)
-						closeRelay()
+						if pktType == xot.PktTypeClearConfirm {
+							closeRelay()
+						}
 						return
 					}
 
@@ -376,9 +381,10 @@ func handleIncomingXot(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
 							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
-						// Forward the clear packet before exiting
 						xot.SendXot(destIf, destConn, d)
-						closeRelay()
+						if pktType == xot.PktTypeClearConfirm {
+							closeRelay()
+						}
 						return
 					}
 

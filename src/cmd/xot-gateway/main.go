@@ -274,6 +274,13 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 			var relayWg sync.WaitGroup
 			relayWg.Add(2)
 
+			var relayDataWg sync.WaitGroup
+			relayDataWg.Add(2)
+			go func() {
+				relayDataWg.Wait()
+				closeRelay()
+			}()
+
 			var lastActivity atomic.Int64
 			var interruptProbeInFlight atomic.Bool
 			callEstablished := make(chan struct{})
@@ -285,6 +292,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				xot.ThreadsActive.Add("relay_remote_to_local", 1)
 				defer xot.ThreadsActive.Add("relay_remote_to_local", -1)
 				defer relayWg.Done()
+				defer relayDataWg.Done()
 				buf := xot.GetBuffer()
 				defer xot.PutBuffer(buf)
 				for {
@@ -330,9 +338,10 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
 							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
-						// Forward the clear packet before exiting
 						xot.SendXot("unix", conn, d)
-						closeRelay()
+						if pktType == xot.PktTypeClearConfirm {
+							closeRelay()
+						}
 						return
 					}
 
@@ -345,6 +354,7 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 				xot.ThreadsActive.Add("relay_local_to_remote", 1)
 				defer xot.ThreadsActive.Add("relay_local_to_remote", -1)
 				defer relayWg.Done()
+				defer relayDataWg.Done()
 				buf := xot.GetBuffer()
 				defer xot.PutBuffer(buf)
 				for {
@@ -383,9 +393,10 @@ func handleGatewayConn(conn net.Conn, cm *xot.ConfigManager, stop chan struct{})
 						if pktType == xot.PktTypeClearRequest && len(d) >= 4 {
 							xot.CausesReceived.Add(fmt.Sprintf("0x%02x", d[3]), 1)
 						}
-						// Forward the clear packet before exiting
 						xot.SendXot("xot", remoteConn, d)
-						closeRelay()
+						if pktType == xot.PktTypeClearConfirm {
+							closeRelay()
+						}
 						return
 					}
 
