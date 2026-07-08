@@ -146,8 +146,9 @@ int get_pacsize_log(int size) {
 
 void *sender_thread(void *arg) {
     int thread_id = (int)(long)arg;
-    unsigned char *send_buf = malloc(cfg.buffer_size + 1);
-    unsigned char *recv_buf = malloc(cfg.buffer_size + 1);
+    unsigned char *send_buf = malloc(cfg.buffer_size + 3);
+    unsigned char *recv_buf = malloc(cfg.buffer_size + 3);
+    unsigned char *recv_tmp = malloc(cfg.buffer_size + 3);
     
     long start_addr_val = atol(cfg.start_addr);
     long end_addr_val = atol(cfg.end_addr);
@@ -275,32 +276,44 @@ void *sender_thread(void *arg) {
         
         int call_id = calls_count++;
         int data_len = (rand_r(&thread_seed) % cfg.buffer_size) + 1;
-        send_buf[0] = 0x00; // X.25 control byte: Data (Q-bit = 0)
-        fill_buffer(send_buf + 1, data_len, thread_id, call_id);
+        send_buf[0] = 0x00; // Q-bit = 0
+        send_buf[1] = (data_len >> 8) & 0xFF;
+        send_buf[2] = data_len & 0xFF;
+        fill_buffer(send_buf + 3, data_len, thread_id, call_id);
 
-        ssize_t sent = send(sock, send_buf, data_len + 1, MSG_EOR);
+        ssize_t sent = send(sock, send_buf, data_len + 3, MSG_EOR);
         if (sent > 0) {
-            atomic_fetch_add(&global_stats.bytes_sent, sent - 1);
+            atomic_fetch_add(&global_stats.bytes_sent, data_len);
             atomic_fetch_add(&global_stats.packets_sent, 1);
-            
-            ssize_t received = read(sock, recv_buf, cfg.buffer_size + 1);
-            
-            if (received > 0) {
-                atomic_fetch_add(&global_stats.bytes_received, received - 1);
+
+            // Receive echo, accumulating across fragments.
+            // Each read() prepends a Q-bit byte; strip it from continuations.
+            ssize_t have = read(sock, recv_buf, cfg.buffer_size + 3);
+            while (have > 0 && have < sent) {
+                ssize_t more = read(sock, recv_tmp, cfg.buffer_size + 3);
+                if (more <= 0) break;
+                int copy = more - 1;
+                if (copy > sent - have) copy = sent - have;
+                memcpy(recv_buf + have, recv_tmp + 1, copy);
+                have += copy;
+            }
+
+            if (have > 0) {
+                atomic_fetch_add(&global_stats.bytes_received, have > 3 ? have - 3 : 0);
                 atomic_fetch_add(&global_stats.packets_received, 1);
             }
 
-            if (received < sent) {
+            if (have < sent) {
                 atomic_fetch_add(&global_stats.short_receive, 1);
                 atomic_fetch_add(&global_stats.data_mismatches, 1);
-                printf("Thread %d: Short receive between %s/%s: expected %ld, got %ld\n", thread_id, current_local, target_addr, sent, received);
+                printf("Thread %d: Short receive between %s/%s: expected %d, got %ld\n",
+                       thread_id, current_local, target_addr, data_len, have > 3 ? have - 3 : 0L);
             } else {
-                // Skip control byte (index 0) when comparing
                 for (int i = 1; i < sent; i++) {
                     if (send_buf[i] != recv_buf[i]) {
                         atomic_fetch_add(&global_stats.data_mismatches, 1);
-                        printf("Thread %d: Data mismatch between %s/%s at offset %d (expected 0x%02x, got 0x%02x)\n", 
-                                thread_id, current_local, target_addr, i - 1, send_buf[i], recv_buf[i]);
+                        printf("Thread %d: Data mismatch between %s/%s at offset %d (expected 0x%02x, got 0x%02x)\n",
+                               thread_id, current_local, target_addr, i - 1, send_buf[i], recv_buf[i]);
                         break;
                     }
                 }
@@ -315,6 +328,7 @@ void *sender_thread(void *arg) {
 
     free(send_buf);
     free(recv_buf);
+    free(recv_tmp);
     return NULL;
 }
 
@@ -326,39 +340,51 @@ typedef struct {
 void *handle_client(void *arg) {
     client_info_t *info = (client_info_t *)arg;
     int client_sock = info->client_sock;
-    unsigned char *buf = malloc(cfg.buffer_size + 1);
+    unsigned char *buf = malloc(cfg.buffer_size + 3);
+    unsigned char *tmp = malloc(cfg.buffer_size + 3);
 
     struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
     setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     int one = 1;
     setsockopt(client_sock, SOL_X25, X25_QBITINCL, &one, sizeof(one));
-    
+
     record_facilities(client_sock);
 
     while (1) {
-        ssize_t n = read(client_sock, buf, cfg.buffer_size + 1);
+        // First read: [Q-bit][len_hi][len_lo][data_start...]
+        ssize_t n = read(client_sock, buf, cfg.buffer_size + 3);
         if (n <= 0) break;
-        
-        // The first byte is the X.25 Q-bit byte (prepended by kernel due to X25_QBITINCL)
-        // We count only the actual user data
-        ssize_t user_data_len = n - 1;
-        if (user_data_len < 0) user_data_len = 0;
+        if (n < 3) break;
 
-        atomic_fetch_add(&global_stats.bytes_received, user_data_len);
+        int data_len = ((int)buf[1] << 8) | (int)buf[2];
+        int total_needed = data_len + 3;
+        if (total_needed > cfg.buffer_size + 3) break;
+
+        // Accumulate continuation fragments; each has a Q-bit byte prepended.
+        ssize_t have = n;
+        while (have < total_needed) {
+            ssize_t more = read(client_sock, tmp, cfg.buffer_size + 3);
+            if (more <= 0) { have = -1; break; }
+            int copy = more - 1;
+            if (copy > total_needed - have) copy = total_needed - have;
+            memcpy(buf + have, tmp + 1, copy);
+            have += copy;
+        }
+        if (have < total_needed) break;
+
+        atomic_fetch_add(&global_stats.bytes_received, data_len);
         atomic_fetch_add(&global_stats.packets_received, 1);
 
-        // Echo back (including the Q-bit byte) using MSG_EOR
-        ssize_t sent = send(client_sock, buf, n, MSG_EOR);
+        ssize_t sent = send(client_sock, buf, total_needed, MSG_EOR);
         if (sent > 0) {
-            ssize_t sent_user_data = sent - 1;
-            if (sent_user_data < 0) sent_user_data = 0;
-            atomic_fetch_add(&global_stats.bytes_sent, sent_user_data);
+            atomic_fetch_add(&global_stats.bytes_sent, data_len);
             atomic_fetch_add(&global_stats.packets_sent, 1);
         }
     }
     close(client_sock);
     free(buf);
+    free(tmp);
     free(info);
     return NULL;
 }
